@@ -1,1 +1,12 @@
-node_modules/
+echo ".venv/
+__pycache__/
+*.pt
+*.npy
+*.npz
+*.dylib
+*.so
+*.pth
+*.log
+data/
+models/
+torch/

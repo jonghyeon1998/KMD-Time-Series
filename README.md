@@ -1,0 +1,1 @@
+This project aims to create a foundation model for time series using kernel methods. Namely, given training data from multiple different dynamical systems, potentially with different numbers of time observations and irregular sampling, our task is to create a model that outputs the next state in each time series.

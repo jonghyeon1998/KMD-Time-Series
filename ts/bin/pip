@@ -1,6 +1,4 @@
-#!/bin/sh
-'''exec' "/Users/jonghyeonlee/Downloads/Time Series/ts/bin/python3" "$0" "$@"
-' '''
+#!/Users/jonghyeonlee/KMD_TS/ts/bin/python
 # -*- coding: utf-8 -*-
 import re
 import sys

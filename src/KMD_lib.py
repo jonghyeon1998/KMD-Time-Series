@@ -959,7 +959,7 @@ def get_input_modedivide(t_mesh, omega_mesh, modes_freq, E, prompt):
     user_input = ""
     mode_divide = []
     remaining_modes = np.arange(modes_freq.shape[0])
-    mode_i = np.zeros((0), dtype=np.int)
+    mode_i = np.zeros((0), dtype=int)
 
     while user_input != "Done":
         user_input = input("Input mode segments to add to mode " + str(len(mode_divide)) +
@@ -972,16 +972,16 @@ def get_input_modedivide(t_mesh, omega_mesh, modes_freq, E, prompt):
             else: print("Invalid mode selected, please try again")
         elif user_input == "All":
             mode_i = remaining_modes
-            remaining_modes = np.zeros((0), dtype=np.int)
+            remaining_modes = np.zeros((0), dtype=int)
         elif user_input == "Next":
             if mode_i.shape[0] > 0:
                 mode_divide.append(mode_i)
-            mode_i = np.zeros((0), dtype=np.int)
+            mode_i = np.zeros((0), dtype=int)
         elif user_input != "Done": print("Invalid input, please try again")
 
     if mode_i.shape[0] > 0: mode_divide.append(mode_i)
 
-    temp_modes = np.zeros((0), dtype=np.int)
+    temp_modes = np.zeros((0), dtype=int)
 
     if remaining_modes.shape[0] > 0:
         print("The following modes remain, select which ones to keep:")
@@ -1008,7 +1008,7 @@ def get_input_modedivide(t_mesh, omega_mesh, modes_freq, E, prompt):
                     print("Invalid mode selected, please try again")
             elif user_input == "All":
                 temp_modes = remaining_modes
-                remaining_modes = np.zeros((0), dtype=np.int)
+                remaining_modes = np.zeros((0), dtype=int)
             elif user_input != "Done":
                 print("Invalid input, please try again")
 
@@ -1336,7 +1336,7 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
                 wave_params_i = ["custom", wp.f[mode_i]]
             signal -= fmodes[mode_i, :, 0] * wave(wave_params_i, fmodes[mode_i, :, 1])
 
-        omega_cut = np.zeros((N, 2), dtype=np.int)
+        omega_cut = np.zeros((N, 2), dtype=int)
 
         print(E_thresh)
 
@@ -1387,7 +1387,7 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
 
                                 fm = np.concatenate((fm, final_modes_i), axis=0)
                 if fm.shape[0] > 0:
-                    mode_cov = np.zeros((N), dtype=np.int)
+                    mode_cov = np.zeros((N), dtype=int)
                     mode_len = np.zeros((fm.shape[0]))
 
                     for i in range(fm.shape[0]):
@@ -1528,7 +1528,7 @@ def manual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), thr=0
                 wave_params_i = ["custom", wp.f[mode_indx]]
             signal -= fmodes[mode_indx, :, 0] * wave(wave_params_i, fmodes[mode_indx, :, 1])
 
-        omega_cut = np.zeros((N, 2), dtype=np.int)
+        omega_cut = np.zeros((N, 2), dtype=int)
 
         print(E_thresh)
 

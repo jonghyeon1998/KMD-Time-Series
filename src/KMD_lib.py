@@ -102,7 +102,7 @@ def make_omega_mesh(t_mesh, alpha):
     log_omegaL = round(math.log2(7.0 * alpha / (tU - tL)) * 20.0)
     log_omegaU = round(math.log2(1.0 / ss) * 20.0)
 
-    omega_mesh = 2 ** (np.arange(log_omegaL, log_omegaU, dtype=np.float) / 20.0)
+    omega_mesh = 2 ** (np.arange(log_omegaL, log_omegaU, dtype=float) / 20.0)
     return omega_mesh
 
 def omega_compress_ratio(ss, omega):

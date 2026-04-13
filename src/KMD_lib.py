@@ -894,12 +894,18 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
             for mode_indx in range(modes.shape[0]):
                 mode_indx_low[mode_indx] = np.min(np.nonzero(modes[mode_indx, :, 0, 0])[0])
                 mode_indx_high[mode_indx] = np.min(np.nonzero(modes[mode_indx, :, 0, 0])[0])
-
+                
             mode_indx_sorted = np.argsort(mode_indx_low)
             mode[0] = modes[mode_indx_sorted[-1]]
             for mode_indx in range(num_modes - 1):
-                next_mode_indx = mode_indx_sorted[-mode_indx - 2]
-                mode[0] = mode_connect3(t_mesh, mode[0], modes[next_mode_indx], rot[mode_indx])
+                next_mode = modes[mode_indx_sorted[-mode_indx - 2]]
+                mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
+
+            # mode_indx_sorted = np.argsort(mode_indx_low)
+            # mode[0] = modes[mode_indx_sorted[-1]]
+            # for mode_indx in range(num_modes - 1):
+            #     next_mode_indx = mode_indx_sorted[-mode_indx - 2]
+            #     mode[0] = mode_connect3(t_mesh, mode[0], modes[next_mode_indx], rot[mode_indx])
             fmode[0] = convert_to_final_mode(t_mesh, wave_params, mode, signal, temp_modes, 1, alpha)
 
         else:
@@ -920,10 +926,15 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
                 mode_indx_low[mode_indx] = np.min(np.nonzero(modes[mode_indx, :, 0, 0])[0])
                 mode_indx_high[mode_indx] = np.max(np.nonzero(modes[mode_indx, :, 0, 0])[0])
 
+            # mode_indx_sorted = np.argsort(mode_indx_low)
+            # mode[0] = modes[mode_indx_sorted[-1]]
+            # for mode_indx in range(num_modes - 1):
+            #     mode[0] = mode_connect3(t_mesh, mode[0], mode_indx_sorted[-mode_indx - 2], rot[mode_indx])
             mode_indx_sorted = np.argsort(mode_indx_low)
             mode[0] = modes[mode_indx_sorted[-1]]
             for mode_indx in range(num_modes - 1):
-                mode[0] = mode_connect3(t_mesh, mode[0], mode_indx_sorted[-mode_indx - 2], rot[mode_indx])
+                next_mode = modes[mode_indx_sorted[-mode_indx - 2]]
+                mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
 
             fmode[0] = convert_to_final_mode(t_mesh, wave_params, mode, signal, temp_modes, 1, alpha)
 
@@ -1482,7 +1493,7 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
                                 final_modes_i[mode_i, :, 0] /= fund_coeff(wave_params)
 
                             else:
-                                c = learn_waveform(t_mesh, signal, fmodes, modes_i, wave_params, num_ov, alpha)
+                                c = learn_waveform(t_mesh, signal, fmodes, modes_i, wp, num_ov, alpha)
                                 wp.f = np.concatenate((wp.f, c.reshape((1, num_ov, 2))), axis=0)
 
                         fmodes = np.concatenate((fmodes, final_modes_i), axis=0)
@@ -1619,7 +1630,7 @@ def manual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), thr=0
                             final_modes_i[mode_indx, :, 0] /= fund_coeff(wave_params)
 
                         else:
-                            c = learn_waveform(t_mesh, signal, fmodes, modes_i, wave_params, num_ov, alpha)
+                            c = learn_waveform(t_mesh, signal, fmodes, modes_i, wp, num_ov, alpha)
                             wp.f = np.concatenate((wp.f, c.reshape((1, num_ov, 2))), axis=0)
 
                     fmodes = np.concatenate((fmodes, final_modes_i), axis=0)

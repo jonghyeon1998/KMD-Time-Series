@@ -2169,14 +2169,34 @@ def opt_final10(t_mesh, sig_full, fmodes, wp, thresh, win_size, alpha, min_alpha
 
     return fmodes, wp, success
 
+# def stab_opt_final10(t_mesh, sig_full, fmodes, wp, thresh, win_size, alpha, min_alpha, check_freq, max_iter):
+#     #Runs opt_final10 with given window size, if the loop is unstable, it increases win_size of the savgol filter (which leads to stability in experiments)
+#     success = False
+#     orig_modes = copy.deepcopy(fmodes)
+
+#     while not success:
+#         fmodes2, wp, success = opt_final10(t_mesh, sig_full, orig_modes, wp, thresh, win_size, alpha, min_alpha, check_freq, max_iter)
+#         orig_modes = copy.deepcopy(fmodes)
+#         win_size += 1
+
+#     return fmodes2, wp
+
 def stab_opt_final10(t_mesh, sig_full, fmodes, wp, thresh, win_size, alpha, min_alpha, check_freq, max_iter):
-    #Runs opt_final10 with given window size, if the loop is unstable, it increases win_size of the savgol filter (which leads to stability in experiments)
     success = False
     orig_modes = copy.deepcopy(fmodes)
+    retry_count = 0
+    max_retries = 5
 
-    while not success:
-        fmodes2, wp, success = opt_final10(t_mesh, sig_full, orig_modes, wp, thresh, win_size, alpha, min_alpha, check_freq, max_iter)
+    while (not success) and retry_count < max_retries:
+        fmodes2, wp, success = opt_final10(
+            t_mesh, sig_full, orig_modes, wp, thresh, win_size, alpha, min_alpha, check_freq, max_iter
+        )
         orig_modes = copy.deepcopy(fmodes)
         win_size += 1
+        retry_count += 1
+
+    if not success:
+        print("stab_opt_final10: giving up after max retries")
+        return orig_modes, wp
 
     return fmodes2, wp

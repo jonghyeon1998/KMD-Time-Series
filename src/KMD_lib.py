@@ -1674,10 +1674,10 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
     else:
         fmodes = np.zeros((0, N, 4))
 
-    print("before valid_final:", final_modes_i.shape)
-    print("valid_final:", valid_final)
-    print("before valid_modes cleanup:", fmodes.shape)
-    print("valid_modes:", valid_modes)
+    # print("before valid_final:", final_modes_i.shape)
+    # print("valid_final:", valid_final)
+    # print("before valid_modes cleanup:", fmodes.shape)
+    # print("valid_modes:", valid_modes)
 
     if ref_fin and fmodes.shape[0] > 0:
         #TODO: work on these hyperparameters

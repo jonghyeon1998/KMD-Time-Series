@@ -1579,7 +1579,30 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
                         for mode_i in range(fmodes.shape[0]):
                             fmodes[mode_i, :, 1] = phase_modtosmooth(fmodes[mode_i, :, 1])
                 if cond and num_modes > 0:
-                    fmodes, wp = stab_opt_final10(t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100)
+                    valid_modes = []
+                    for i in range(fmodes.shape[0]):
+                        ls = int(fmodes[i, 0, 3])
+                        hs = int(fmodes[i, 1, 3])
+
+                        if not (0 <= ls < N and 0 < hs <= N and ls < hs):
+                            print(f"Dropping mode {i}: invalid support ls={ls}, hs={hs}")
+                            continue
+
+                        omega_low = fmodes[i, ls, 2]
+                        omega_high = fmodes[i, hs - 1, 2]
+
+                        if not (np.isfinite(omega_low) and np.isfinite(omega_high) and omega_low > 0 and omega_high > 0):
+                            print(f"Dropping mode {i}: invalid edge frequencies {omega_low}, {omega_high}")
+                            continue
+
+                        valid_modes.append(i)
+
+                        if len(valid_modes) > 0:
+                            fmodes = fmodes[valid_modes]
+                            if wp.w[0] == "unk" and wp.f.shape[0] >= len(valid_modes):
+                                wp.f = wp.f[valid_modes]
+                            fmodes, wp = stab_opt_final10(t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100)
+                            #fmodes, wp = stab_opt_final10(t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100)
 
                 omega_cut[:, 0] = copy.deepcopy(omega_cut[:, 1])
 

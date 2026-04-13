@@ -1956,17 +1956,37 @@ def opt_final10(t_mesh, sig_full, fmodes, wp, thresh, win_size, alpha, min_alpha
                         micloc_wave2[counter, 2] = t0
                         counter += 1
 
+            # micloc_wave2 = micloc_wave2[:counter]
+
+            # t_mesh_i = micloc_wave2[:, 2]
+            # sin_int = micloc_wave2[:, 1]
+            # cos_int = micloc_wave2[:, 0]
+
+            # sin_int_spl = CubicSpline(t_mesh_i, sin_int)
+            # cos_int_spl = CubicSpline(t_mesh_i, cos_int)
+
+            # micloc_wave[low_stop2:high_stop2 + 1, 1] = sin_int_spl(t_mesh[low_stop2:high_stop2 + 1])
+            # micloc_wave[low_stop2:high_stop2 + 1, 0] = cos_int_spl(t_mesh[low_stop2:high_stop2 + 1])
             micloc_wave2 = micloc_wave2[:counter]
 
-            t_mesh_i = micloc_wave2[:, 2]
-            sin_int = micloc_wave2[:, 1]
-            cos_int = micloc_wave2[:, 0]
+            if counter == 0:
+                print(f"Skipping spline refinement for mode {mode_i}: no sample points")
+                continue
 
-            sin_int_spl = CubicSpline(t_mesh_i, sin_int)
-            cos_int_spl = CubicSpline(t_mesh_i, cos_int)
+            if counter == 1:
+                t0 = int(np.argmin(np.abs(t_mesh - micloc_wave2[0, 2])))
+                micloc_wave[low_stop2:high_stop2 + 1, 1] = micloc_wave2[0, 1]
+                micloc_wave[low_stop2:high_stop2 + 1, 0] = micloc_wave2[0, 0]
+            else:
+                t_mesh_i = micloc_wave2[:, 2]
+                sin_int = micloc_wave2[:, 1]
+                cos_int = micloc_wave2[:, 0]
 
-            micloc_wave[low_stop2:high_stop2 + 1, 1] = sin_int_spl(t_mesh[low_stop2:high_stop2 + 1])
-            micloc_wave[low_stop2:high_stop2 + 1, 0] = cos_int_spl(t_mesh[low_stop2:high_stop2 + 1])
+                sin_int_spl = CubicSpline(t_mesh_i, sin_int)
+                cos_int_spl = CubicSpline(t_mesh_i, cos_int)
+
+                micloc_wave[low_stop2:high_stop2 + 1, 1] = sin_int_spl(t_mesh[low_stop2:high_stop2 + 1])
+                micloc_wave[low_stop2:high_stop2 + 1, 0] = cos_int_spl(t_mesh[low_stop2:high_stop2 + 1])
 
             micloc_wave, ls, hs = mode_clip(t_mesh, freq_orig[mode_i], fmodes[mode_i, :, 2], micloc_wave)
 

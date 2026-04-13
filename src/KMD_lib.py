@@ -1564,9 +1564,12 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
 
                             modes_i = modes_i[valid]
                             rot = np.zeros((modes_i.shape[0]))
+                            # final_modes_i[mode_i] = final_mode_group3(
+                            #     t_mesh, wp, signal, modes_i, tmodes, rot, alpha
+                            # )
                             final_modes_i[mode_i] = final_mode_group3(
                                 t_mesh, wp, signal, modes_i, tmodes, rot, alpha
-                            )
+                            )[0]
 
                             if wave_params[0] != "unk":
                                 final_modes_i[mode_i, :, 0] /= fund_coeff(wave_params)

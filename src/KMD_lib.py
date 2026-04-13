@@ -488,6 +488,7 @@ def mode_consolidate(t_mesh, omega_mesh, wave_params, sig, temp_modes, modes_all
     modes_all = modes_all.reshape((-1, 2, 2))
 
     modes_bound = np.zeros((0, modes_all.shape[0], 2, 2))
+    
     t_low = 0
     t_high = 0
 
@@ -552,6 +553,8 @@ def mode_consolidate(t_mesh, omega_mesh, wave_params, sig, temp_modes, modes_all
         mode_frags[mode_indx, t_min:t_max + 1, 1, 1] = -amp_frag * np.sin(phase_frag)
 
     modes_bound = copy.deepcopy(mode_frags)
+    if modes_bound.shape[0] == 0:
+        return np.zeros((0, N, 2, 2))
     if modes_bound.shape[0] > 0:
         mode_t_min = np.min(np.nonzero(modes_bound[0, :, 0, 0])[0])
         mode_t_max = np.max(np.nonzero(modes_bound[-1, :, 0, 0])[0])
@@ -961,23 +964,58 @@ def get_input_modedivide(t_mesh, omega_mesh, modes_freq, E, prompt):
     remaining_modes = np.arange(modes_freq.shape[0])
     mode_i = np.zeros((0), dtype=int)
 
+    # while user_input != "Done":
+    #     print("Remaining modes:", remaining_modes)
+    #     user_input = input("Input mode segments to add to mode " + str(len(mode_divide)) +
+    #                        " (if done with mode: Next, if done with all modes: Done): ")
+    #     if represents_int(user_input):
+    #         if int(user_input) in remaining_modes:
+    #             print("Remaining modes:", remaining_modes)
+    #             mode_i = np.concatenate((mode_i, [int(user_input)]), axis=0)
+    #             #print(mode_i)
+    #             remaining_modes = np.delete(remaining_modes, np.where(remaining_modes == int(user_input))[0][0], 0)
+    #         else: print("Invalid mode selected, please try again")
+    #     elif user_input == "All":
+    #         mode_i = remaining_modes
+    #         remaining_modes = np.zeros((0), dtype=int)
+    #     elif user_input == "Next":
+    #         if mode_i.shape[0] > 0:
+    #             mode_divide.append(mode_i)
+    #         mode_i = np.zeros((0), dtype=int)
+    #     elif user_input != "Done": print("Invalid input, please try again")
     while user_input != "Done":
-        user_input = input("Input mode segments to add to mode " + str(len(mode_divide)) +
-                           " (if done with mode: Next, if done with all modes: Done): ")
+        print("remaining_modes =", remaining_modes)
+        user_input = input(
+            "Input mode segments to add to mode " + str(len(mode_divide)) +
+            " (if done with mode: Next, if done with all modes: Done): "
+        )
+
         if represents_int(user_input):
+            print("You entered:", int(user_input))
+            print("Allowed:", list(remaining_modes))
+            print("Membership test:", int(user_input) in remaining_modes)
+
             if int(user_input) in remaining_modes:
                 mode_i = np.concatenate((mode_i, [int(user_input)]), axis=0)
-                #print(mode_i)
-                remaining_modes = np.delete(remaining_modes, np.where(remaining_modes == int(user_input))[0][0], 0)
-            else: print("Invalid mode selected, please try again")
+                remaining_modes = np.delete(
+                    remaining_modes,
+                    np.where(remaining_modes == int(user_input))[0][0],
+                    0
+                )
+            else:
+                print("Invalid mode selected, please try again")
+
         elif user_input == "All":
-            mode_i = remaining_modes
+            mode_i = remaining_modes.copy()
             remaining_modes = np.zeros((0), dtype=int)
+
         elif user_input == "Next":
             if mode_i.shape[0] > 0:
                 mode_divide.append(mode_i)
             mode_i = np.zeros((0), dtype=int)
-        elif user_input != "Done": print("Invalid input, please try again")
+
+        elif user_input != "Done":
+            print("Invalid input, please try again")
 
     if mode_i.shape[0] > 0: mode_divide.append(mode_i)
 

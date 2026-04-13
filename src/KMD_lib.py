@@ -641,13 +641,18 @@ def convert_to_final_mode(t_mesh, wave_params, raw_mode, signal, temp_modes, thr
     #converts raw_mode, which is in the form sin/cos, to amp/phase
     #extends the mode if possible
     #returns a final mode
+    
     N = t_mesh.shape[0]
+    
+    raw_mode = raw_mode.reshape((1, -1, 2, 2))
+    if np.count_nonzero(raw_mode[0, :, 0, 0]) == 0:
+        return np.zeros((1, N, 4))
     ss = t_mesh[1] - t_mesh[0]
 
     t_L = np.min(np.nonzero(raw_mode[0, :, 0, 0])[0])
     t_H = np.max(np.nonzero(raw_mode[0, :, 0, 0])[0])
 
-    raw_mode = raw_mode.reshape((1, -1, 2, 2))
+    #raw_mode = raw_mode.reshape((1, -1, 2, 2))
     fmode = np.zeros((1, raw_mode.shape[1], 4))
 
     fmode[0, :, 0] = np.sqrt(raw_mode[0, :, 1, 0] ** 2 + raw_mode[0, :, 1, 1] ** 2)
@@ -880,6 +885,10 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
     #first sorts the modes in time, then connects their gaps (with mode_connect3)
     #then converts to amp/phase and extends the mode if possible
     #returns a final mode
+    
+    N = t_mesh.shape[0]
+    ss = t_mesh[1] - t_mesh[0]
+
     valid = []
     for mode_indx in range(modes.shape[0]):
         if np.count_nonzero(modes[mode_indx, :, 0, 0]) > 0:
@@ -891,10 +900,6 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
     modes = modes[valid]
     num_modes = modes.shape[0]
 
-    N = t_mesh.shape[0]
-    ss = t_mesh[1] - t_mesh[0]
-
-    num_modes = modes.shape[0]
     mode = np.zeros((1, N, 2, 2))
     fmode = np.zeros((1, N, 4))
 
@@ -953,7 +958,16 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
             for t_indx in range(N):
                 if num_modes_t[t_indx] > 1:
                     modes[:, t_indx] *= 0
+            valid = []
+            for mode_indx in range(modes.shape[0]):
+                if np.count_nonzero(modes[mode_indx, :, 0, 0]) > 0:
+                    valid.append(mode_indx)
 
+            if len(valid) == 0:
+                return np.zeros((1, N, 4))
+
+            modes = modes[valid]
+            num_modes = modes.shape[0]
             num_modes_t = np.zeros((N))
             for mode_indx in range(modes.shape[0]):
                 for t_indx in range(N):

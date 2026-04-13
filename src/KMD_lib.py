@@ -1567,9 +1567,19 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
                             # final_modes_i[mode_i] = final_mode_group3(
                             #     t_mesh, wp, signal, modes_i, tmodes, rot, alpha
                             # )
-                            final_modes_i[mode_i] = final_mode_group3(
+                            mode_out = np.array(final_mode_group3(
                                 t_mesh, wp, signal, modes_i, tmodes, rot, alpha
-                            )[0]
+                            ))
+
+                            print("mode_out.shape =", mode_out.shape)
+
+                            if mode_out.ndim == 3 and mode_out.shape[0] == 1 and mode_out.shape[2] == 4:
+                                final_modes_i[mode_i] = mode_out[0]
+                            elif mode_out.ndim == 2 and mode_out.shape[1] == 4:
+                                final_modes_i[mode_i] = mode_out
+                            else:
+                                print("Skipping malformed mode output:", mode_out.shape)
+                                continue
 
                             if wave_params[0] != "unk":
                                 final_modes_i[mode_i, :, 0] /= fund_coeff(wave_params)
@@ -1577,22 +1587,43 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
                                 c = learn_waveform(t_mesh, signal, fmodes, modes_i, wp, num_ov, alpha)
                                 wp.f = np.concatenate((wp.f, c.reshape((1, num_ov, 2))), axis=0)
 
-                        fmodes = np.concatenate((fmodes, final_modes_i), axis=0)
+                        valid_final = []
+                        for j in range(final_modes_i.shape[0]):
+                            if np.count_nonzero(final_modes_i[j, :, 2]) > 0:
+                                valid_final.append(j)
+
+                        if len(valid_final) > 0:
+                            fmodes = np.concatenate((fmodes, final_modes_i[valid_final]), axis=0)
 
                         for mode_i in range(fmodes.shape[0]):
                             fmodes[mode_i, :, 1] = phase_modtosmooth(fmodes[mode_i, :, 1])
                 if cond and num_modes > 0:
+                    print("fmodes.shape =", fmodes.shape)
+                    for i in range(fmodes.shape[0]):
+                        print("fmodes[", i, "].shape =", np.array(fmodes[i]).shape)
+
                     valid_modes = []
                     for i in range(fmodes.shape[0]):
-                        ls = int(fmodes[i, 0, 3])
-                        hs = int(fmodes[i, 1, 3])
+                        mode_i_arr = np.array(fmodes[i])
+                        print(f"mode {i} raw shape =", mode_i_arr.shape)
+
+                        if mode_i_arr.ndim != 2 or mode_i_arr.shape[1] != 4:
+                            print(f"Dropping mode {i}: malformed shape {mode_i_arr.shape}")
+                            continue
+
+                        if mode_i_arr.shape[0] < 2:
+                            print(f"Dropping mode {i}: too short shape {mode_i_arr.shape}")
+                            continue
+
+                        ls = int(mode_i_arr[0, 3])
+                        hs = int(mode_i_arr[1, 3])
 
                         if not (0 <= ls < N and 0 < hs <= N and ls < hs):
                             print(f"Dropping mode {i}: invalid support ls={ls}, hs={hs}")
                             continue
 
-                        omega_low = fmodes[i, ls, 2]
-                        omega_high = fmodes[i, hs - 1, 2]
+                        omega_low = mode_i_arr[ls, 2]
+                        omega_high = mode_i_arr[hs - 1, 2]
 
                         if not (np.isfinite(omega_low) and np.isfinite(omega_high) and omega_low > 0 and omega_high > 0):
                             print(f"Dropping mode {i}: invalid edge frequencies {omega_low}, {omega_high}")
@@ -1600,13 +1631,14 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
 
                         valid_modes.append(i)
 
-                        if len(valid_modes) > 0:
-                            fmodes = fmodes[valid_modes]
-                            if wp.w[0] == "unk" and wp.f.shape[0] >= len(valid_modes):
-                                wp.f = wp.f[valid_modes]
-                            fmodes, wp = stab_opt_final10(t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100)
-                            #fmodes, wp = stab_opt_final10(t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100)
+                    if len(valid_modes) > 0:
+                        fmodes = fmodes[valid_modes]
+                        if wp.w[0] == "unk" and wp.f.shape[0] >= len(valid_modes):
+                            wp.f = wp.f[valid_modes]
 
+                        fmodes, wp = stab_opt_final10(
+                            t_mesh, original_signal, fmodes, wp, thr, 8, alpha, alpha, 1.0, 100
+                        )
                 omega_cut[:, 0] = copy.deepcopy(omega_cut[:, 1])
 
     for mode_i in range(fmodes.shape[0]):
@@ -1669,6 +1701,14 @@ def manual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), thr=0
 
     E_border = compute_E_border(t_mesh, om_mesh, alpha)
     E_thresh = thr_en * np.max(E)
+    
+    om_mesh = make_omega_mesh(t_mesh, alpha)
+    if om_mesh.shape[0] == 0:
+        raise ValueError("Empty omega mesh; adjust t_mesh scaling or alpha.")
+
+    E = compute_E_fast(t_mesh, om_mesh, wp, signal, fmodes, tmodes, 0, alpha)
+    if E.size == 0:
+        raise ValueError("Empty energy matrix E; omega mesh is likely empty.")
 
     cond = True
 

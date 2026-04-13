@@ -1644,6 +1644,41 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
     for mode_i in range(fmodes.shape[0]):
         fmodes[mode_i, :, 1] = phase_modtosmooth(fmodes[mode_i, :, 1])
 
+    clean_modes = []
+    for i in range(fmodes.shape[0]):
+        mode_i_arr = np.array(fmodes[i])
+
+        if mode_i_arr.ndim != 2 or mode_i_arr.shape[1] != 4:
+            continue
+        if mode_i_arr.shape[0] < 2:
+            continue
+
+        ls = int(mode_i_arr[0, 3])
+        hs = int(mode_i_arr[1, 3])
+
+        if not (0 <= ls < N and 0 < hs <= N and ls < hs):
+            continue
+
+        omega_low = mode_i_arr[ls, 2]
+        omega_high = mode_i_arr[hs - 1, 2]
+
+        if not (np.isfinite(omega_low) and np.isfinite(omega_high) and omega_low > 0 and omega_high > 0):
+            continue
+
+        clean_modes.append(i)
+
+    if len(clean_modes) > 0:
+        fmodes = fmodes[clean_modes]
+        if wp.w[0] == "unk" and wp.f.shape[0] >= len(clean_modes):
+            wp.f = wp.f[clean_modes]
+    else:
+        fmodes = np.zeros((0, N, 4))
+
+    print("before valid_final:", final_modes_i.shape)
+    print("valid_final:", valid_final)
+    print("before valid_modes cleanup:", fmodes.shape)
+    print("valid_modes:", valid_modes)
+
     if ref_fin and fmodes.shape[0] > 0:
         #TODO: work on these hyperparameters
         if wp.w[0] == "ekg":

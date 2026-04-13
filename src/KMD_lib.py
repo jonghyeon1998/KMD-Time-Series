@@ -788,15 +788,35 @@ def mode_connect3(t_mesh, mode0, mode1, rot):
     N = t_mesh.shape[0]
     ss = t_mesh[1] - t_mesh[0]
 
+    # mode0 = mode0.reshape((1, N, 2, 2))
+    # mode1 = mode1.reshape((1, N, 2, 2))
+
+    # conn_mode = np.zeros((1, N, 2, 2))
+
+    # mode0_t_low = np.min(np.nonzero(mode0[0, :, 0, 0])[0])
+    # mode1_t_low = np.min(np.nonzero(mode1[0, :, 0, 0])[0])
+    # mode0_t_high = np.max(np.nonzero(mode0[0, :, 0, 0])[0])
+    # mode1_t_high = np.max(np.nonzero(mode1[0, :, 0, 0])[0])
+
     mode0 = mode0.reshape((1, N, 2, 2))
     mode1 = mode1.reshape((1, N, 2, 2))
 
+    nz0 = np.nonzero(mode0[0, :, 0, 0])[0]
+    nz1 = np.nonzero(mode1[0, :, 0, 0])[0]
+
+    if nz0.shape[0] == 0 and nz1.shape[0] == 0:
+        return np.zeros((1, N, 2, 2))
+    if nz0.shape[0] == 0:
+        return mode1
+    if nz1.shape[0] == 0:
+        return mode0
+
     conn_mode = np.zeros((1, N, 2, 2))
 
-    mode0_t_low = np.min(np.nonzero(mode0[0, :, 0, 0])[0])
-    mode1_t_low = np.min(np.nonzero(mode1[0, :, 0, 0])[0])
-    mode0_t_high = np.max(np.nonzero(mode0[0, :, 0, 0])[0])
-    mode1_t_high = np.max(np.nonzero(mode1[0, :, 0, 0])[0])
+    mode0_t_low = np.min(nz0)
+    mode1_t_low = np.min(nz1)
+    mode0_t_high = np.max(nz0)
+    mode1_t_high = np.max(nz1)
 
     if mode0_t_low < mode1_t_low:
         cut_low = mode0_t_high + 1
@@ -914,7 +934,13 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
             mode[0] = modes[mode_indx_sorted[-1]]
             for mode_indx in range(num_modes - 1):
                 next_mode = modes[mode_indx_sorted[-mode_indx - 2]]
-                mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
+                if np.count_nonzero(next_mode[:, 0, 0]) == 0:
+                    continue
+
+                if np.count_nonzero(mode[0, :, 0, 0]) == 0:
+                    mode[0] = next_mode
+                else:
+                    mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
 
             # mode_indx_sorted = np.argsort(mode_indx_low)
             # mode[0] = modes[mode_indx_sorted[-1]]
@@ -954,7 +980,15 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
             mode[0] = modes[mode_indx_sorted[-1]]
             for mode_indx in range(num_modes - 1):
                 next_mode = modes[mode_indx_sorted[-mode_indx - 2]]
-                mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
+                if np.count_nonzero(next_mode[:, 0, 0]) == 0:
+                    continue
+
+                if np.count_nonzero(mode[0, :, 0, 0]) == 0:
+                    mode[0] = next_mode
+                else:
+                    mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
+                next_mode = modes[mode_indx_sorted[-mode_indx - 2]]
+                # mode[0] = mode_connect3(t_mesh, mode[0], next_mode, rot[mode_indx])
 
             fmode[0] = convert_to_final_mode(t_mesh, wave_params, mode, signal, temp_modes, 1, alpha)
 

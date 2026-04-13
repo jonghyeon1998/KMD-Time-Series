@@ -860,6 +860,16 @@ def final_mode_group3(t_mesh, wave_params, signal, modes, temp_modes, rot, alpha
     #first sorts the modes in time, then connects their gaps (with mode_connect3)
     #then converts to amp/phase and extends the mode if possible
     #returns a final mode
+    valid = []
+    for mode_indx in range(modes.shape[0]):
+        if np.count_nonzero(modes[mode_indx, :, 0, 0]) > 0:
+            valid.append(mode_indx)
+
+    if len(valid) == 0:
+        return np.zeros((1, N, 4))
+
+    modes = modes[valid]
+    num_modes = modes.shape[0]
 
     N = t_mesh.shape[0]
     ss = t_mesh[1] - t_mesh[0]
@@ -1478,16 +1488,32 @@ def semimanual_maxpool_peel2(signal, wave_p=0, alpha=25, t_mesh=np.zeros((1)), t
 
                     elif num_modes > 0:
                         num_modes = len(user_input)
+                        modes_i = np.zeros((user_input[mode_i].shape[0], N, 2, 2))
+                        for mode_indx2 in range(user_input[mode_i].shape[0]):
+                            modes_i[mode_indx2] = modes_full[user_input[mode_i][mode_indx2]]
 
+                        valid = []
+                        for k in range(modes_i.shape[0]):
+                            if np.count_nonzero(modes_i[k, :, 0, 0]) > 0:
+                                valid.append(k)
+
+                        if len(valid) == 0:
+                            print("Skipping empty selected group:", user_input[mode_i])
+                            continue
                         final_modes_i = np.zeros((num_modes, N, 4))
 
                         for mode_i in range(num_modes):
-                            modes_i = np.zeros((user_input[mode_i].shape[0], N, 2, 2))
-                            for mode_indx2 in range(user_input[mode_i].shape[0]):
-                                modes_i[mode_indx2] = modes_full[user_input[mode_i][mode_indx2]]
-
-                            rot = np.zeros((user_input[mode_i].shape[0]))
+                            modes_i = modes_i[valid]
+                            rot = np.zeros((modes_i.shape[0]))
                             final_modes_i[mode_i] = final_mode_group3(t_mesh, wp, signal, modes_i, tmodes, rot, alpha)
+
+                        # for mode_i in range(num_modes):
+                        #     modes_i = np.zeros((user_input[mode_i].shape[0], N, 2, 2))
+                        #     for mode_indx2 in range(user_input[mode_i].shape[0]):
+                        #         modes_i[mode_indx2] = modes_full[user_input[mode_i][mode_indx2]]
+
+                        #     rot = np.zeros((user_input[mode_i].shape[0]))
+                        #     final_modes_i[mode_i] = final_mode_group3(t_mesh, wp, signal, modes_i, tmodes, rot, alpha)
 
                             if wave_params[0] != "unk":
                                 final_modes_i[mode_i, :, 0] /= fund_coeff(wave_params)

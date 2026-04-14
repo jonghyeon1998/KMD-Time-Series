@@ -1352,16 +1352,21 @@ def learn_waveform_final(t_mesh, sig_full, fmodes, mode_inter, wp, alpha):
         ot = learn_waveform0(t_mesh, sig_i, np.zeros((0, N, 4)), fmodes[comp_indx], 0, num_overtones, alpha)
 
         overtones = np.zeros((0, 2 * num_overtones - 1))
-
         N_ot = ot.shape[0]
 
         for t_indx in range(N_ot):
             if mode_inter[comp_indx, t_indx] == 0:
                 overtones = np.concatenate((overtones, ot[t_indx:t_indx + 1]), axis=0)
 
-        ot_t = np.zeros((2 * num_overtones - 2, N_ot))
+        N_keep = overtones.shape[0]
+        if N_keep == 0:
+            print(f"No overtone samples kept for component {comp_indx}")
+            continue
+
+        ot_t = np.zeros((2 * num_overtones - 2, N_keep))
         a_i = np.ones((num_overtones, 2))
         a_i[0, 1] = 0
+
         for ov_indx in range(1, 2 * num_overtones - 1):
             overtone_i = overtones[:, ov_indx] / overtones[:, 0]
             ot_t[ov_indx - 1] = overtone_i

@@ -76,6 +76,35 @@ def load_train_validation_series(
     return train, future
 
 
+def load_training_series_collection(
+    dataset_name: str,
+    *,
+    term: str = "short",
+    to_univariate: bool = False,
+    storage_env_var: str = "GIFT_EVAL",
+    max_series: int | None = None,
+) -> list[tuple[int, np.ndarray]]:
+    dataset = Dataset(
+        name=dataset_name,
+        term=term,
+        to_univariate=to_univariate,
+        storage_env_var=storage_env_var,
+    )
+
+    series_collection: list[tuple[int, np.ndarray]] = []
+    for series_index, entry in enumerate(dataset.training_dataset):
+        if max_series is not None and series_index >= max_series:
+            break
+        series_collection.append(
+            (
+                series_index,
+                _as_1d_array(entry["target"], f"{dataset_name} training target[{series_index}]"),
+            )
+        )
+
+    return series_collection
+
+
 def infer_common_context_length(
     train_series: Sequence[np.ndarray],
     requested_length: int | None = None,
@@ -90,6 +119,36 @@ def infer_common_context_length(
             raise ValueError(
                 f"Requested context_length={requested_length} exceeds the common "
                 f"available prefix length {max_common_length}."
+            )
+        context_length = int(requested_length)
+
+    if round_down_to_power_of_two and context_length > 0:
+        context_length = 2 ** int(np.floor(np.log2(context_length)))
+
+    return context_length
+
+
+def infer_common_rolling_context_length(
+    train_series: Sequence[np.ndarray],
+    *,
+    horizon_length: int,
+    requested_length: int | None = None,
+    round_down_to_power_of_two: bool = False,
+) -> int:
+    max_common_length = min(int(np.asarray(series).shape[0]) - horizon_length for series in train_series)
+    if max_common_length <= 0:
+        raise ValueError(
+            "At least one training series is too short to provide a context/future split "
+            f"with horizon_length={horizon_length}."
+        )
+
+    if requested_length is None:
+        context_length = max_common_length
+    else:
+        if requested_length > max_common_length:
+            raise ValueError(
+                f"Requested context_length={requested_length} exceeds the common "
+                f"rolling-window limit {max_common_length} for horizon_length={horizon_length}."
             )
         context_length = int(requested_length)
 
@@ -438,3 +497,96 @@ def summarize_prepared_bank(
             }
         )
     return summary
+
+
+def rolling_window_end_indices(
+    series_length: int,
+    *,
+    context_length: int,
+    horizon_length: int,
+    stride: int | None = None,
+    max_windows: int | None = None,
+) -> list[int]:
+    if stride is None:
+        stride = horizon_length
+    if stride <= 0:
+        raise ValueError("stride must be positive.")
+
+    last_end = series_length - horizon_length
+    if last_end < context_length:
+        return []
+
+    end_indices = list(range(context_length, last_end + 1, stride))
+    if end_indices[-1] != last_end:
+        end_indices.append(last_end)
+
+    if max_windows is not None and len(end_indices) > max_windows:
+        keep = np.linspace(0, len(end_indices) - 1, num=max_windows, dtype=int)
+        end_indices = [end_indices[i] for i in sorted(set(keep.tolist()))]
+
+    return end_indices
+
+
+def prepare_support_window_bank(
+    dataset_names: Sequence[str],
+    *,
+    term: str = "short",
+    to_univariate: bool = False,
+    context_length: int | None = None,
+    horizon_length: int,
+    transform: str = "asinh",
+    imputation_strategy: str = "linear",
+    round_down_to_power_of_two: bool = False,
+    window_stride: int | None = None,
+    max_windows_per_series: int | None = None,
+    max_series_per_dataset: int | None = None,
+    storage_env_var: str = "GIFT_EVAL",
+) -> list[PreparedKernelSeries]:
+    all_series: list[tuple[str, int, np.ndarray]] = []
+
+    for dataset_name in dataset_names:
+        series_collection = load_training_series_collection(
+            dataset_name,
+            term=term,
+            to_univariate=to_univariate,
+            storage_env_var=storage_env_var,
+            max_series=max_series_per_dataset,
+        )
+        for series_index, series in series_collection:
+            all_series.append((dataset_name, series_index, series))
+
+    if not all_series:
+        return []
+
+    context_length = infer_common_rolling_context_length(
+        [series for _, _, series in all_series],
+        horizon_length=horizon_length,
+        requested_length=context_length,
+        round_down_to_power_of_two=round_down_to_power_of_two,
+    )
+
+    prepared_support: list[PreparedKernelSeries] = []
+    for dataset_name, series_index, series in all_series:
+        end_indices = rolling_window_end_indices(
+            series.shape[0],
+            context_length=context_length,
+            horizon_length=horizon_length,
+            stride=window_stride,
+            max_windows=max_windows_per_series,
+        )
+        for window_number, end_idx in enumerate(end_indices):
+            context = series[end_idx - context_length : end_idx]
+            future = series[end_idx : end_idx + horizon_length]
+            prepared_support.append(
+                prepare_kernel_series(
+                    context,
+                    future,
+                    name=f"{dataset_name}#series{series_index}#window{window_number}",
+                    context_length=context_length,
+                    horizon_length=horizon_length,
+                    transform=transform,
+                    imputation_strategy=imputation_strategy,
+                )
+            )
+
+    return prepared_support

@@ -433,6 +433,7 @@ def build_mama_kernel(
     for prototype in prototypes:
         for tau in tau_grid:
             shifted = np.interp(time_grid - tau, time_grid, prototype, left=0.0, right=0.0)
+            #shifted = np.interp(time_grid, time_grid, prototype, left=0.0, right=0.0)
             chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
             kernel += np.outer(chi, chi)
 

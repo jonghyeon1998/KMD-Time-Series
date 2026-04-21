@@ -407,9 +407,54 @@ def normalized_time_grid(length: int) -> np.ndarray:
     return np.linspace(0.0, 1.0, length, dtype=float)
 
 
+def _uniform_grid_shift_steps(
+    time_grid: np.ndarray,
+    tau_grid: np.ndarray,
+    *,
+    atol: float = 1e-9,
+) -> list[int] | None:
+    if time_grid.ndim != 1 or tau_grid.ndim != 1:
+        return None
+    if time_grid.size == 0 or tau_grid.size == 0:
+        return []
+    if time_grid.size == 1:
+        return [0 for _ in tau_grid]
+
+    step = float(time_grid[1] - time_grid[0])
+    if not np.allclose(np.diff(time_grid), step, atol=atol, rtol=0.0):
+        return None
+
+    origin = float(time_grid[0])
+    shift_steps: list[int] = []
+    for tau in tau_grid:
+        raw_shift = (float(tau) - origin) / step
+        rounded_shift = int(np.round(raw_shift))
+        if not np.isclose(raw_shift, rounded_shift, atol=atol, rtol=0.0):
+            return None
+        shift_steps.append(rounded_shift)
+
+    return shift_steps
+
+
+def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    shifted = np.zeros_like(arr)
+    if shift_steps == 0:
+        shifted[:] = arr
+        return shifted
+
+    if shift_steps > 0:
+        shifted[shift_steps:] = arr[:-shift_steps]
+        return shifted
+
+    shifted[:shift_steps] = arr[-shift_steps:]
+    return shifted
+
+
 def build_mama_kernel(
     prototype_bank: np.ndarray,
     *,
+    prototype_masks: np.ndarray | None = None,
     time_grid: np.ndarray | None = None,
     tau_grid: np.ndarray | None = None,
     alpha: float = 1.0,
@@ -429,11 +474,43 @@ def build_mama_kernel(
     time_grid = np.asarray(time_grid, dtype=float)
     tau_grid = np.asarray(tau_grid, dtype=float)
     kernel = np.zeros((context_length, context_length), dtype=float)
+    masks = None
+    if prototype_masks is not None:
+        masks = np.asarray(prototype_masks, dtype=float)
+        if masks.shape != prototypes.shape:
+            raise ValueError("prototype_masks must have the same shape as prototype_bank.")
 
-    for prototype in prototypes:
-        for tau in tau_grid:
-            shifted = np.interp(time_grid - tau, time_grid, prototype, left=0.0, right=0.0)
-            #shifted = np.interp(time_grid, time_grid, prototype, left=0.0, right=0.0)
+    shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
+
+    for prototype_index, prototype in enumerate(prototypes):
+        observed_prototype = prototype
+        prototype_mask = None
+        if masks is not None:
+            prototype_mask = masks[prototype_index]
+            observed_prototype = prototype * prototype_mask
+
+        for tau_index, tau in enumerate(tau_grid):
+            if shift_steps is not None:
+                shifted = _shift_with_zeros(observed_prototype, shift_steps[tau_index])
+                shifted_mask = (
+                    _shift_with_zeros(prototype_mask, shift_steps[tau_index])
+                    if prototype_mask is not None
+                    else None
+                )
+            else:
+                shifted = np.interp(time_grid - tau, time_grid, observed_prototype, left=0.0, right=0.0)
+                shifted_mask = None
+                if prototype_mask is not None:
+                    shifted_mask = np.interp(
+                        time_grid - tau,
+                        time_grid,
+                        prototype_mask,
+                        left=0.0,
+                        right=0.0,
+                    )
+
+            if shifted_mask is not None:
+                shifted = shifted * shifted_mask
             chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
             kernel += np.outer(chi, chi)
 
@@ -452,7 +529,10 @@ def build_gamma_gram(
 ) -> np.ndarray:
     X = np.asarray(contexts, dtype=float)
     if masks is not None:
-        X = X * np.asarray(masks, dtype=float)
+        mask_arr = np.asarray(masks, dtype=bool)
+        if mask_arr.shape != X.shape:
+            raise ValueError("contexts and masks must have the same shape.")
+        X = np.where(mask_arr, X, 0.0)
 
     regularized = np.asarray(time_kernel, dtype=float) + lambda_k * np.eye(time_kernel.shape[0])
     solved = np.linalg.solve(regularized, X.T)
@@ -472,13 +552,70 @@ def build_gamma_query(
     X = np.asarray(contexts, dtype=float)
 
     if query_mask is not None:
-        q = q * np.asarray(query_mask, dtype=float).reshape(1, -1)
+        query_mask_arr = np.asarray(query_mask, dtype=bool).reshape(1, -1)
+        if query_mask_arr.shape != q.shape:
+            raise ValueError("query_context and query_mask must have the same shape.")
+        q = np.where(query_mask_arr, q, 0.0)
     if context_masks is not None:
-        X = X * np.asarray(context_masks, dtype=float)
+        context_mask_arr = np.asarray(context_masks, dtype=bool)
+        if context_mask_arr.shape != X.shape:
+            raise ValueError("contexts and context_masks must have the same shape.")
+        X = np.where(context_mask_arr, X, 0.0)
 
     regularized = np.asarray(time_kernel, dtype=float) + lambda_k * np.eye(time_kernel.shape[0])
     solved = np.linalg.solve(regularized, X.T)
     return (q @ solved).reshape(-1)
+
+
+def predict_future_from_gamma(
+    gamma_query: np.ndarray,
+    gamma_gram: np.ndarray,
+    future_targets: np.ndarray,
+    *,
+    lambda_gamma: float = 1e-3,
+    target_masks: np.ndarray | None = None,
+    fill_value: float = 0.0,
+) -> np.ndarray:
+    g = np.asarray(gamma_query, dtype=float).reshape(-1)
+    G = np.asarray(gamma_gram, dtype=float)
+    Y = np.asarray(future_targets, dtype=float)
+
+    squeeze_output = False
+    if Y.ndim == 1:
+        Y = Y.reshape(-1, 1)
+        squeeze_output = True
+
+    if G.shape[0] != G.shape[1]:
+        raise ValueError("gamma_gram must be square.")
+    if g.shape[0] != G.shape[0] or Y.shape[0] != G.shape[0]:
+        raise ValueError("gamma_query, gamma_gram, and future_targets must agree on support size.")
+
+    if target_masks is None:
+        prediction = g @ np.linalg.solve(G + lambda_gamma * np.eye(G.shape[0]), Y)
+        return prediction.reshape(-1) if squeeze_output else prediction
+
+    M = np.asarray(target_masks, dtype=bool)
+    if M.shape != Y.shape:
+        raise ValueError("future_targets and target_masks must have the same shape.")
+
+    prediction = np.full(Y.shape[1], fill_value, dtype=float)
+    cached_subgrams: dict[bytes, tuple[np.ndarray, np.ndarray]] = {}
+
+    for step in range(Y.shape[1]):
+        observed = M[:, step]
+        if not observed.any():
+            continue
+
+        key = observed.tobytes()
+        if key not in cached_subgrams:
+            idx = np.flatnonzero(observed)
+            subgram = G[np.ix_(idx, idx)] + lambda_gamma * np.eye(idx.size)
+            cached_subgrams[key] = (idx, subgram)
+
+        idx, subgram = cached_subgrams[key]
+        prediction[step] = float(g[idx] @ np.linalg.solve(subgram, Y[idx, step]))
+
+    return prediction[0] if squeeze_output else prediction
 
 
 def summarize_prepared_bank(

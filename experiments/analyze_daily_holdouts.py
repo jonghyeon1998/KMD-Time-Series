@@ -15,6 +15,7 @@ from src.kernel_preprocessing import (
     inverse_transform_with_stats,
     prepare_dataset_bank,
     prepare_support_window_bank,
+    predict_future_from_gamma,
     stack_context_bank,
     stack_future_bank,
 )
@@ -117,6 +118,9 @@ def evaluate_holdout(unseen_name: str) -> ForecastResult:
 
     X, X_mask = stack_context_bank(support, include_masks=True)
     Y, _ = stack_future_bank(support, include_masks=True)
+    Y_scaled = np.vstack([np.where(series.future_mask, series.future_scaled, 0.0) for series in support])
+    Y_mask = np.vstack([series.future_mask.astype(bool) for series in support])
+    X_scaled = np.vstack([series.context_scaled for series in support])
     _, unseen = prepare_dataset_bank(
         seen_names,
         unseen_name=unseen_name,
@@ -127,20 +131,28 @@ def evaluate_holdout(unseen_name: str) -> ForecastResult:
     )
     assert unseen is not None
 
-    K = build_mama_kernel(X, alpha=ALPHA, omega=OMEGA)
-    Gamma_xx = build_gamma_gram(X, time_kernel=K, lambda_k=LAMBDA_K, masks=X_mask)
-    Gamma_wx = build_gamma_query(
-        unseen.context_filled,
-        X,
+    K = build_mama_kernel(X, prototype_masks=X_mask, alpha=ALPHA, omega=OMEGA)
+    Gamma_xx = build_gamma_gram(
+        X_scaled,
         time_kernel=K,
+        masks=X_mask,
         lambda_k=LAMBDA_K,
+    )
+    Gamma_wx = build_gamma_query(
+        unseen.context_scaled,
+        X_scaled,
+        time_kernel=K,
         query_mask=unseen.context_mask,
         context_masks=X_mask,
+        lambda_k=LAMBDA_K,
     )
 
-    pred_scaled = Gamma_wx @ np.linalg.solve(
-        Gamma_xx + LAMBDA_GAMMA * np.eye(Gamma_xx.shape[0]),
-        Y,
+    pred_scaled = predict_future_from_gamma(
+        Gamma_wx,
+        Gamma_xx,
+        Y_scaled,
+        lambda_gamma=LAMBDA_GAMMA,
+        target_masks=Y_mask,
     )
     pred_raw = inverse_transform_with_stats(
         pred_scaled,

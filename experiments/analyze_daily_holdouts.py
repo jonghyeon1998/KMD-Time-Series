@@ -47,6 +47,7 @@ MAX_SERIES_PER_DATASET = 20
 TRANSFORM = "asinh"
 IMPUTATION_STRATEGY = "linear"
 SEASONAL_PERIOD = 7
+PERCENTILE_VALUES = list(range(5, 101, 5))
 
 
 @dataclass
@@ -59,6 +60,10 @@ class ForecastResult:
     pred_seasonal_raw: np.ndarray
     pred_last_scaled: np.ndarray
     pred_seasonal_scaled: np.ndarray
+    best_gammawx_pruned_pred_scaled: np.ndarray
+    best_gammawx_pruned_pred_raw: np.ndarray
+    gammawx_percentile_results: list[dict[str, float | int]]
+    best_gammawx_percentile: dict[str, float | int]
     metrics: dict[str, float | int | str]
 
 
@@ -175,6 +180,58 @@ def evaluate_holdout(unseen_name: str) -> ForecastResult:
     pred_seasonal_raw_obs = pred_seasonal_raw[observed_future]
     pred_seasonal_scaled_obs = pred_seasonal_scaled[observed_future]
 
+    gamma_diag = np.diag(Gamma_xx)
+    valid_support = np.isfinite(gamma_diag) & (gamma_diag > 1e-12) & np.isfinite(Gamma_wx)
+    valid_support_idx = np.where(valid_support)[0]
+    Gamma_xx_valid = Gamma_xx[np.ix_(valid_support_idx, valid_support_idx)]
+    Gamma_wx_valid = Gamma_wx[valid_support_idx]
+    Y_valid = Y_scaled[valid_support_idx]
+    Y_mask_valid = Y_mask[valid_support_idx]
+    sorted_gammawx_idx = np.argsort(-np.abs(Gamma_wx_valid))
+
+    gammawx_percentile_results: list[dict[str, float | int]] = []
+    best_gammawx_pred_scaled = pred_scaled.copy()
+    best_gammawx_pred_raw = pred_raw.copy()
+    best_gammawx_percentile: dict[str, float | int] | None = None
+
+    for pct in PERCENTILE_VALUES:
+        k_pct = max(1, int(np.ceil(len(valid_support_idx) * pct / 100.0)))
+        idx_local = sorted_gammawx_idx[:k_pct]
+        pred_scaled_pct = predict_future_from_gamma(
+            Gamma_wx_valid[idx_local],
+            Gamma_xx_valid[np.ix_(idx_local, idx_local)],
+            Y_valid[idx_local],
+            lambda_gamma=LAMBDA_GAMMA,
+            target_masks=Y_mask_valid[idx_local],
+        )
+        pred_raw_pct = inverse_transform_with_stats(
+            pred_scaled_pct,
+            loc=unseen.loc,
+            scale=unseen.scale,
+            transform=unseen.transform,
+        )
+        result_pct = {
+            "top_percent_kept": int(pct),
+            "k": int(k_pct),
+            "scaled_relative_l2_error": relative_l2_error(
+                pred_scaled_pct[observed_future], true_scaled_obs
+            ),
+            "unscaled_relative_l2_error": relative_l2_error(
+                pred_raw_pct[observed_future], true_raw_obs
+            ),
+        }
+        gammawx_percentile_results.append(result_pct)
+        if (
+            best_gammawx_percentile is None
+            or float(result_pct["unscaled_relative_l2_error"])
+            < float(best_gammawx_percentile["unscaled_relative_l2_error"])
+        ):
+            best_gammawx_percentile = result_pct
+            best_gammawx_pred_scaled = pred_scaled_pct
+            best_gammawx_pred_raw = pred_raw_pct
+
+    assert best_gammawx_percentile is not None
+
     metrics = {
         "unseen_name": unseen_name,
         "support_window_count": int(len(support)),
@@ -198,6 +255,14 @@ def evaluate_holdout(unseen_name: str) -> ForecastResult:
         "seasonal7_unscaled_relative_l2_error": relative_l2_error(
             pred_seasonal_raw_obs, true_raw_obs
         ),
+        "best_gammawx_pruned_percent": int(best_gammawx_percentile["top_percent_kept"]),
+        "best_gammawx_pruned_k": int(best_gammawx_percentile["k"]),
+        "best_gammawx_pruned_scaled_relative_l2_error": float(
+            best_gammawx_percentile["scaled_relative_l2_error"]
+        ),
+        "best_gammawx_pruned_unscaled_relative_l2_error": float(
+            best_gammawx_percentile["unscaled_relative_l2_error"]
+        ),
     }
 
     return ForecastResult(
@@ -209,6 +274,10 @@ def evaluate_holdout(unseen_name: str) -> ForecastResult:
         pred_seasonal_raw=pred_seasonal_raw,
         pred_last_scaled=pred_last_scaled,
         pred_seasonal_scaled=pred_seasonal_scaled,
+        best_gammawx_pruned_pred_scaled=best_gammawx_pred_scaled,
+        best_gammawx_pruned_pred_raw=best_gammawx_pred_raw,
+        gammawx_percentile_results=gammawx_percentile_results,
+        best_gammawx_percentile=best_gammawx_percentile,
         metrics=metrics,
     )
 
@@ -322,6 +391,98 @@ def save_variability_scatter(results: list[ForecastResult], output_path: Path) -
     plt.close(fig)
 
 
+def save_gammawx_percentile_grid(results: list[ForecastResult], output_path: Path) -> None:
+    cols = 2
+    rows = int(np.ceil(len(results) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(14, 4.1 * rows), sharex=False, sharey=False)
+    axes = np.asarray(axes).reshape(-1)
+
+    for ax, result in zip(axes, results):
+        percentiles = [int(item["top_percent_kept"]) for item in result.gammawx_percentile_results]
+        scaled = [float(item["scaled_relative_l2_error"]) for item in result.gammawx_percentile_results]
+        unscaled = [float(item["unscaled_relative_l2_error"]) for item in result.gammawx_percentile_results]
+        best_pct = int(result.best_gammawx_percentile["top_percent_kept"])
+        best_idx = percentiles.index(best_pct)
+
+        ax.plot(percentiles, scaled, marker="o", linewidth=1.8, label="scaled rel-L2")
+        ax.plot(percentiles, unscaled, marker="s", linewidth=1.8, label="unscaled rel-L2")
+        ax.scatter(
+            [best_pct],
+            [unscaled[best_idx]],
+            color="tab:red",
+            s=45,
+            zorder=5,
+            label="best unscaled",
+        )
+        ax.axvline(100, color="0.75", linestyle="--", linewidth=1.0)
+        ax.set_title(
+            f"{result.unseen_name}\nbest={best_pct}% kept, raw rel-L2={unscaled[best_idx]:.3f}"
+        )
+        ax.set_xlabel("Top |Gamma(w, x)| percentile kept")
+        ax.set_ylabel("Relative L2 error")
+        ax.grid(True, alpha=0.25)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=3, frameon=False)
+    for ax in axes[len(results) :]:
+        ax.axis("off")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
+def save_best_pruned_prediction_grid(results: list[ForecastResult], output_path: Path) -> None:
+    cols = 2
+    rows = int(np.ceil(len(results) / cols))
+    fig, axes = plt.subplots(rows, cols, figsize=(14, 4.2 * rows), sharex=False)
+    axes = np.asarray(axes).reshape(-1)
+
+    for ax, result in zip(axes, results):
+        unseen = result.prepared_unseen
+        steps = np.arange(unseen.horizon_length)
+        missing = ~unseen.future_mask.astype(bool)
+
+        ax.plot(steps, unseen.future_raw, marker="o", label="true", linewidth=1.8)
+        ax.plot(
+            steps,
+            result.best_gammawx_pruned_pred_raw,
+            marker="x",
+            label="best |Gamma_wx| pruned",
+            linewidth=1.5,
+        )
+        ax.plot(steps, result.pred_raw, linestyle="--", label="full kernel", linewidth=1.2, alpha=0.9)
+        if missing.any():
+            ax.scatter(
+                steps[missing],
+                np.zeros(int(missing.sum()), dtype=float),
+                marker="v",
+                color="tab:red",
+                s=25,
+                label="missing future",
+            )
+        ax.set_title(
+            (
+                f"{result.unseen_name}\n"
+                f"best={int(result.best_gammawx_percentile['top_percent_kept'])}% "
+                f"(k={int(result.best_gammawx_percentile['k'])}), "
+                f"raw rel-L2={float(result.best_gammawx_percentile['unscaled_relative_l2_error']):.3f}"
+            )
+        )
+        ax.set_xlabel("Forecast step")
+        ax.set_ylabel("Original units")
+        ax.grid(True, alpha=0.25)
+
+    handles, labels = axes[0].get_legend_handles_labels()
+    unique = dict(zip(labels, handles))
+    fig.legend(unique.values(), unique.keys(), loc="upper center", ncol=4, frameon=False)
+    for ax in axes[len(results) :]:
+        ax.axis("off")
+    fig.tight_layout(rect=(0, 0, 1, 0.97))
+    fig.savefig(output_path, dpi=200)
+    plt.close(fig)
+
+
 def main() -> None:
     output_dir = Path("/Users/jonghyeonlee/KMD_TS/experiments/daily_holdout_analysis")
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -331,6 +492,10 @@ def main() -> None:
     save_prediction_grid(results, output_dir / "daily_holdout_predictions.png")
     save_metric_bar_chart(results, output_dir / "daily_holdout_unscaled_l2_bar.png")
     save_variability_scatter(results, output_dir / "daily_holdout_variability_vs_error.png")
+    save_gammawx_percentile_grid(results, output_dir / "daily_holdout_gammawx_percentile_l2.png")
+    save_best_pruned_prediction_grid(
+        results, output_dir / "daily_holdout_best_gammawx_pruned_predictions.png"
+    )
 
     rows = [result.metrics for result in results]
     best = min(rows, key=lambda row: float(row["kernel_unscaled_relative_l2_error"]))

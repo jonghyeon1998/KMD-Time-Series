@@ -712,19 +712,26 @@ def prepare_support_window_bank(
             stride=window_stride,
             max_windows=max_windows_per_series,
         )
-        for window_number, end_idx in enumerate(end_indices):
-            context = series[end_idx - context_length : end_idx]
-            future = series[end_idx : end_idx + horizon_length]
-            prepared_support.append(
-                prepare_kernel_series(
-                    context,
-                    future,
-                    name=f"{dataset_name}#series{series_index}#window{window_number}",
-                    context_length=context_length,
-                    horizon_length=horizon_length,
-                    transform=transform,
-                    imputation_strategy=imputation_strategy,
-                )
+        end_idx = len(series)
+        train, val = load_train_validation_series(
+            dataset_name,
+            "short",
+            series_index,
+             False,
+             "GIFT_EVAL",
+        ) 
+        context = train[end_idx - context_length :]
+        future = val[: horizon_length]
+        prepared_support.append(
+            prepare_kernel_series(
+                context,
+                future,
+                name=f"{dataset_name}#series{series_index}",
+                context_length=context_length,
+                horizon_length=horizon_length,
+                transform=transform,
+                imputation_strategy=imputation_strategy,
             )
+        )
 
     return prepared_support

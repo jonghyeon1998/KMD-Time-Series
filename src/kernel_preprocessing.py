@@ -634,35 +634,7 @@ def summarize_prepared_bank(
     return summary
 
 
-def rolling_window_end_indices(
-    series_length: int,
-    *,
-    context_length: int,
-    horizon_length: int,
-    stride: int | None = None,
-    max_windows: int | None = None,
-) -> list[int]:
-    if stride is None:
-        stride = horizon_length
-    if stride <= 0:
-        raise ValueError("stride must be positive.")
-
-    last_end = series_length - horizon_length
-    if last_end < context_length:
-        return []
-
-    end_indices = list(range(context_length, last_end + 1, stride))
-    if end_indices[-1] != last_end:
-        end_indices.append(last_end)
-
-    if max_windows is not None and len(end_indices) > max_windows:
-        keep = np.linspace(0, len(end_indices) - 1, num=max_windows, dtype=int)
-        end_indices = [end_indices[i] for i in sorted(set(keep.tolist()))]
-
-    return end_indices
-
-
-def prepare_support_window_bank(
+def prepare_support_bank(
     dataset_names: Sequence[str],
     *,
     term: str = "short",
@@ -672,8 +644,6 @@ def prepare_support_window_bank(
     transform: str = "asinh",
     imputation_strategy: str = "linear",
     round_down_to_power_of_two: bool = False,
-    window_stride: int | None = None,
-    max_windows_per_series: int | None = None,
     max_series_per_dataset: int | None = None,
     storage_env_var: str = "GIFT_EVAL",
 ) -> list[PreparedKernelSeries]:
@@ -704,10 +674,10 @@ def prepare_support_window_bank(
     for dataset_name, series_index, series in all_series:
         train, val = load_train_validation_series(
             dataset_name,
-            "short",
-            series_index,
-             False,
-             "GIFT_EVAL",
+            term=term,
+            series_index=series_index,
+            to_univariate= False,
+            storage_env_var= "GIFT_EVAL",
         ) 
         prepared_support.append(
             prepare_kernel_series(

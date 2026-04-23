@@ -432,64 +432,64 @@ def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
     return shifted
 
 
-def build_mama_kernel(
-    prototype_bank: np.ndarray,
-    *,
-    context_length: int | None = None,
-    prototype_masks: np.ndarray | None = None,
-    time_grid: np.ndarray | None = None,
-    n_tau: np.ndarray | None = None,
-    alpha: float = 1.0,
-    omega: float = 1.0,
-    normalize: bool = True,
-) -> np.ndarray:
-    prototypes = np.asarray(prototype_bank, dtype=float)
-    if prototypes.ndim != 2:
-        raise ValueError("prototype_bank must have shape (n_series, context_length).")
+# def build_mama_kernel(
+#     prototype_bank: np.ndarray,
+#     *,
+#     context_length: int | None = None,
+#     prototype_masks: np.ndarray | None = None,
+#     time_grid: np.ndarray | None = None,
+#     n_tau: np.ndarray | None = None,
+#     alpha: float = 1.0,
+#     omega: float = 1.0,
+#     normalize: bool = True,
+# ) -> np.ndarray:
+#     prototypes = np.asarray(prototype_bank, dtype=float)
+#     if prototypes.ndim != 2:
+#         raise ValueError("prototype_bank must have shape (n_series, context_length).")
 
-    _, context_length = prototypes.shape
-    if time_grid is None:
-        time_grid = normalized_time_grid(context_length)
+#     _, context_length = prototypes.shape
+#     if time_grid is None:
+#         time_grid = normalized_time_grid(context_length)
 
-    time_grid = np.asarray(time_grid, dtype=float)
-    kernel = np.zeros((context_length, context_length), dtype=float)
-    masks = None
-    if prototype_masks is not None:
-        masks = np.asarray(prototype_masks, dtype=float)
-        if masks.shape != prototypes.shape:
-            raise ValueError("prototype_masks must have the same shape as prototype_bank.")
+#     time_grid = np.asarray(time_grid, dtype=float)
+#     kernel = np.zeros((context_length, context_length), dtype=float)
+#     masks = None
+#     if prototype_masks is not None:
+#         masks = np.asarray(prototype_masks, dtype=float)
+#         if masks.shape != prototypes.shape:
+#             raise ValueError("prototype_masks must have the same shape as prototype_bank.")
 
-    #shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
+#     #shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
 
-    for prototype_index, prototype in enumerate(prototypes):
-        observed_prototype = prototype
-        prototype_mask = None
-        if masks is not None:
-            prototype_mask = masks[prototype_index]
-            observed_prototype = prototype * prototype_mask
+#     for prototype_index, prototype in enumerate(prototypes):
+#         observed_prototype = prototype
+#         prototype_mask = None
+#         if masks is not None:
+#             prototype_mask = masks[prototype_index]
+#             observed_prototype = prototype * prototype_mask
 
-        for tau_index, tau in enumerate(tau_grid):
+#         for tau_index, tau in enumerate(tau_grid):
 
-                shifted = np.interp(time_grid - tau, time_grid, observed_prototype, left=0.0, right=0.0)
-                shifted_mask = None
-                if prototype_mask is not None:
-                    shifted_mask = np.interp(
-                        time_grid - tau,
-                        time_grid,
-                        prototype_mask,
-                        left=0.0,
-                        right=0.0,
-                    )
+#                 shifted = np.interp(time_grid - tau, time_grid, observed_prototype, left=0.0, right=0.0)
+#                 shifted_mask = None
+#                 if prototype_mask is not None:
+#                     shifted_mask = np.interp(
+#                         time_grid - tau,
+#                         time_grid,
+#                         prototype_mask,
+#                         left=0.0,
+#                         right=0.0,
+#                     )
 
-            if shifted_mask is not None:
-                shifted = shifted * shifted_mask
-            chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
-            kernel += np.outer(chi, chi)
+#             if shifted_mask is not None:
+#                 shifted = shifted * shifted_mask
+#             chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
+#             kernel += np.outer(chi, chi)
 
-    if normalize and prototypes.shape[0] > 0 and n_tau.shape[0] > 0:
-        kernel /= float(prototypes.shape[0] * sum(n_tau).shape[0])
+#     if normalize and prototypes.shape[0] > 0 and n_tau.shape[0] > 0:
+#         kernel /= float(prototypes.shape[0] * sum(n_tau).shape[0])
 
-    return kernel
+#     return kernel
 
 
 def build_gamma_gram(
@@ -617,10 +617,7 @@ def prepare_support_bank(
     context_length: int | None = None,
     horizon_length: int,
     transform: str = "asinh",
-    imputation_strategy: str = "linear",
-    round_down_to_power_of_two: bool = False,
-    max_series_per_dataset: int | None = None,
-    storage_env_var: str = "GIFT_EVAL",
+
 ) -> list[PreparedKernelSeries]:
     all_series: list[tuple[str, int, np.ndarray]] = []
 

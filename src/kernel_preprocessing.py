@@ -301,6 +301,7 @@ def prepare_kernel_series(
         train_mask=train_mask,
         context_mask=context_mask,
         future_mask=future_mask,
+        train_scaled=train_scaled,
         context_scaled=context_scaled,
         future_scaled=future_scaled,
         train_filled=train_filled,
@@ -616,8 +617,11 @@ def prepare_support_bank(
     to_univariate: bool = False,
     context_length: int | None = None,
     horizon_length: int,
+    storage_env_var: str = "GIFT_EVAL",
+    max_series_per_dataset: int | None = None,
     transform: str = "asinh",
-
+    imputation_strategy: str = "linear",
+    round_down_to_power_of_two: bool = False
 ) -> list[PreparedKernelSeries]:
     all_series: list[tuple[str, int, np.ndarray]] = []
 

@@ -387,6 +387,17 @@ def prepare_dataset_bank(
 
     return prepared_train, prepared_unseen
 
+def stack_train_bank(
+    train_series: Sequence[PreparedKernelSeries],
+    *,
+    include_masks: bool = False,
+) -> tuple[np.ndarray, np.ndarray | None]:
+    trains = np.vstack([series.train_filled for series in train_series])
+    if not include_masks:
+        return trains, None
+    masks = np.vstack([series.train_mask.astype(float) for series in train_series])
+    return trains, masks
+
 
 def stack_context_bank(
     prepared_series: Sequence[PreparedKernelSeries],
@@ -432,65 +443,127 @@ def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
     shifted[:shift_steps] = arr[-shift_steps:]
     return shifted
 
+def build_baby_kernel(
+    dataset_name: str,
+    *,
+    term: str = "short",
+    series_index: int = 0,
+    context_length: int | None = None,
+    tau_array: np.ndarray | None = None,
+    to_univariate: bool = False,
+    alpha: float = 1.0,
+    omega: float = 1.0,
+    normalize: bool = True,
+    storage_env_var: str = "GIFT_EVAL",
+    transform: str = "asinh",
+    imputation_strategy: str = "linear",):
+    
+    train, _ = load_train_validation_series(
+        dataset_name,
+        term=term,
+        series_index=series_index,
+        to_univariate=to_univariate,
+        storage_env_var=storage_env_var,
+    )
+    
 
-# def build_mama_kernel(
-#     prototype_bank: np.ndarray,
-#     *,
-#     context_length: int | None = None,
-#     prototype_masks: np.ndarray | None = None,
-#     time_grid: np.ndarray | None = None,
-#     n_tau: np.ndarray | None = None,
-#     alpha: float = 1.0,
-#     omega: float = 1.0,
-#     normalize: bool = True,
-# ) -> np.ndarray:
-#     prototypes = np.asarray(prototype_bank, dtype=float)
-#     if prototypes.ndim != 2:
-#         raise ValueError("prototype_bank must have shape (n_series, context_length).")
+    kernel = np.zeros(context_length,context_length)
+    train, _ = load_train_validation_series(
+    dataset_name,
+    term=term,
+    series_index=series_index,
+    to_univariate= False,
+    storage_env_var= "GIFT_EVAL",
+)
+    series_length = len(train)
+    context_raw = train[-context_length:]
+    loc, scale = robust_location_scale(context_raw[np.isfinite(context_raw)])
+    train_scaled = transform_with_stats(train, loc=loc, scale=scale, transform=transform)
 
-#     _, context_length = prototypes.shape
-#     if time_grid is None:
-#         time_grid = normalized_time_grid(context_length)
 
-#     time_grid = np.asarray(time_grid, dtype=float)
-#     kernel = np.zeros((context_length, context_length), dtype=float)
-#     masks = None
-#     if prototype_masks is not None:
-#         masks = np.asarray(prototype_masks, dtype=float)
-#         if masks.shape != prototypes.shape:
-#             raise ValueError("prototype_masks must have the same shape as prototype_bank.")
+    train_filled, _ = impute_missing_1d(train_scaled, strategy=imputation_strategy
+    )
+    if tau_array is None:
+        time_grid = np.arange(context_length-series_length,context_length)
+        for i in range(series_length-context_length):
+            chi = train_filled[i:i+context_length]*np.exp(-alpha*omega**2*(series_length-context_length-time_grid[i:i+context_length])**2)        
+            kernel += np.outer(chi,chi)
+        if normalize and series_length>0:
+            kernel /= series_length
+            
+    else:
+        for tau in tau_array:
+            chi = train_filled[series_length-context_length-tau:series_length-tau]*np.exp(-alpha*omega**2*(time_grid[series_length-context_length-tau:series_length-tau])**2)
+        if normalize and series_length>0:
+            kernel /= series_length   
+    
+    
+    return kernel
 
-#     #shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
+def energy(vector: np.array | None = None, baby_kernel: np.ndarray | None = None, mama_kernel: np.ndarray | None=None, nugget: float = 10**-5):
+    mama_size = mama_kernel.shape[0]
+    
+    Kv = np.linalg.solve(mama_kernel+nugget*np.eye(mama_size),vector)
+    E = np.dot(Kv,baby_kernel@Kv)
+       
+    return E
 
-#     for prototype_index, prototype in enumerate(prototypes):
-#         observed_prototype = prototype
-#         prototype_mask = None
-#         if masks is not None:
-#             prototype_mask = masks[prototype_index]
-#             observed_prototype = prototype * prototype_mask
 
-#         for tau_index, tau in enumerate(tau_grid):
 
-#                 shifted = np.interp(time_grid - tau, time_grid, observed_prototype, left=0.0, right=0.0)
-#                 shifted_mask = None
-#                 if prototype_mask is not None:
-#                     shifted_mask = np.interp(
-#                         time_grid - tau,
-#                         time_grid,
-#                         prototype_mask,
-#                         left=0.0,
-#                         right=0.0,
-#                     )
+def build_mama_kernel(
+    dataset_names: Sequence[str],
+    *,
+    term: str = "short",
+    context_length: int | None = None,
+    horizon_length: int,
+    tau_arrays: list | None = None,
+    to_univariate: bool = False,
+    max_series_per_dataset: int | None = None,
+    alpha: float = 1.0,
+    omega: float = 1.0,
+    normalize: bool = True,
+    storage_env_var: str = "GIFT_EVAL",
+    transform: str = "asinh",
+    imputation_strategy: str = "linear",
+    round_down_to_power_of_two: bool = False,
+) -> np.ndarray:
+    all_series: list[tuple[str, int, np.ndarray]] = []
 
-#             if shifted_mask is not None:
-#                 shifted = shifted * shifted_mask
-#             chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
-#             kernel += np.outer(chi, chi)
+    for dataset_name in dataset_names:
+        series_collection = load_training_series_collection(
+            dataset_name,
+            term=term,
+            to_univariate=to_univariate,
+            storage_env_var=storage_env_var,
+            max_series=max_series_per_dataset,
+        )
+        for series_index, series in series_collection:
+            all_series.append((dataset_name, series_index, series))
+            
+    num_series = len(all_series)
 
-#     if normalize and prototypes.shape[0] > 0 and n_tau.shape[0] > 0:
-#         kernel /= float(prototypes.shape[0] * sum(n_tau).shape[0])
+    if not all_series:
+        return []
 
-#     return kernel
+    context_length = infer_common_rolling_context_length(
+        [series for _, _, series in all_series],
+        horizon_length=horizon_length,
+        requested_length=context_length,
+        round_down_to_power_of_two=round_down_to_power_of_two,
+    )
+    kernel = np.zeros(context_length,context_length)
+
+    for dataset_name, series_index, series in all_series:
+        kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,
+                                    context_length = context_length, tau_array = tau_arrays[series_index],
+                                    to_univariate = to_univariate, alpha= alpha, omega = omega,
+                                    normalize = normalize, storage_env_var = storage_env_var, transform = transform,
+                                    imputation_strategy = imputation_strategy)
+         
+    if normalize and series > 0:
+        kernel /= float(num_series)
+
+    return kernel
 
 
 def build_gamma_gram(

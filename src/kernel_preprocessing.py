@@ -456,7 +456,7 @@ def build_mama_kernel(
     *,
     prototype_masks: np.ndarray | None = None,
     time_grid: np.ndarray | None = None,
-    tau_grid: np.ndarray | None = None,
+    n_tau: np.ndarray | None = None,
     alpha: float = 1.0,
     omega: float = 1.0,
     normalize: bool = True,
@@ -468,11 +468,8 @@ def build_mama_kernel(
     _, context_length = prototypes.shape
     if time_grid is None:
         time_grid = normalized_time_grid(context_length)
-    if tau_grid is None:
-        tau_grid = time_grid
 
     time_grid = np.asarray(time_grid, dtype=float)
-    tau_grid = np.asarray(tau_grid, dtype=float)
     kernel = np.zeros((context_length, context_length), dtype=float)
     masks = None
     if prototype_masks is not None:
@@ -480,7 +477,7 @@ def build_mama_kernel(
         if masks.shape != prototypes.shape:
             raise ValueError("prototype_masks must have the same shape as prototype_bank.")
 
-    shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
+    #shift_steps = _uniform_grid_shift_steps(time_grid, tau_grid)
 
     for prototype_index, prototype in enumerate(prototypes):
         observed_prototype = prototype
@@ -514,8 +511,8 @@ def build_mama_kernel(
             chi = np.exp(-alpha * omega**2 * np.square(time_grid - tau)) * shifted
             kernel += np.outer(chi, chi)
 
-    if normalize and prototypes.shape[0] > 0 and tau_grid.shape[0] > 0:
-        kernel /= float(prototypes.shape[0] * tau_grid.shape[0])
+    if normalize and prototypes.shape[0] > 0 and n_tau.shape[0] > 0:
+        kernel /= float(prototypes.shape[0] * sum(n_tau).shape[0])
 
     return kernel
 
@@ -705,14 +702,6 @@ def prepare_support_window_bank(
 
     prepared_support: list[PreparedKernelSeries] = []
     for dataset_name, series_index, series in all_series:
-        end_indices = rolling_window_end_indices(
-            series.shape[0],
-            context_length=context_length,
-            horizon_length=horizon_length,
-            stride=window_stride,
-            max_windows=max_windows_per_series,
-        )
-        end_idx = len(series)
         train, val = load_train_validation_series(
             dataset_name,
             "short",
@@ -720,12 +709,10 @@ def prepare_support_window_bank(
              False,
              "GIFT_EVAL",
         ) 
-        context = train[end_idx - context_length :]
-        future = val[: horizon_length]
         prepared_support.append(
             prepare_kernel_series(
-                context,
-                future,
+                train,
+                val,
                 name=f"{dataset_name}#series{series_index}",
                 context_length=context_length,
                 horizon_length=horizon_length,

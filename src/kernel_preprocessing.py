@@ -17,10 +17,13 @@ class PreparedKernelSeries:
     raw_future: np.ndarray
     context_raw: np.ndarray
     future_raw: np.ndarray
+    train_mask: np.ndarray
     context_mask: np.ndarray
     future_mask: np.ndarray
+    train_scaled: np.ndarray
     context_scaled: np.ndarray
     future_scaled: np.ndarray
+    train_filled: np.ndarray
     context_filled: np.ndarray
     future_filled: np.ndarray
     loc: float
@@ -274,8 +277,13 @@ def prepare_kernel_series(
     future_raw = future[:horizon_length].copy()
 
     loc, scale = robust_location_scale(context_raw, min_scale=min_scale)
+    train_scaled = transform_with_stats(train, loc=loc, scale=scale, transform=transform)
     context_scaled = transform_with_stats(context_raw, loc=loc, scale=scale, transform=transform)
     future_scaled = transform_with_stats(future_raw, loc=loc, scale=scale, transform=transform)
+
+    train_filled, train_mask = impute_missing_1d(
+        train_scaled, strategy=imputation_strategy
+    )
 
     context_filled, context_mask = impute_missing_1d(
         context_scaled, strategy=imputation_strategy
@@ -290,10 +298,12 @@ def prepare_kernel_series(
         raw_future=future,
         context_raw=context_raw,
         future_raw=future_raw,
+        train_mask=train_mask,
         context_mask=context_mask,
         future_mask=future_mask,
         context_scaled=context_scaled,
         future_scaled=future_scaled,
+        train_filled=train_filled,
         context_filled=context_filled,
         future_filled=future_filled,
         loc=loc,
@@ -407,35 +417,6 @@ def normalized_time_grid(length: int) -> np.ndarray:
     return np.linspace(0.0, 1.0, length, dtype=float)
 
 
-def _uniform_grid_shift_steps(
-    time_grid: np.ndarray,
-    tau_grid: np.ndarray,
-    *,
-    atol: float = 1e-9,
-) -> list[int] | None:
-    if time_grid.ndim != 1 or tau_grid.ndim != 1:
-        return None
-    if time_grid.size == 0 or tau_grid.size == 0:
-        return []
-    if time_grid.size == 1:
-        return [0 for _ in tau_grid]
-
-    step = float(time_grid[1] - time_grid[0])
-    if not np.allclose(np.diff(time_grid), step, atol=atol, rtol=0.0):
-        return None
-
-    origin = float(time_grid[0])
-    shift_steps: list[int] = []
-    for tau in tau_grid:
-        raw_shift = (float(tau) - origin) / step
-        rounded_shift = int(np.round(raw_shift))
-        if not np.isclose(raw_shift, rounded_shift, atol=atol, rtol=0.0):
-            return None
-        shift_steps.append(rounded_shift)
-
-    return shift_steps
-
-
 def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
     arr = np.asarray(values, dtype=float)
     shifted = np.zeros_like(arr)
@@ -454,6 +435,7 @@ def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
 def build_mama_kernel(
     prototype_bank: np.ndarray,
     *,
+    context_length: int | None = None,
     prototype_masks: np.ndarray | None = None,
     time_grid: np.ndarray | None = None,
     n_tau: np.ndarray | None = None,
@@ -487,14 +469,7 @@ def build_mama_kernel(
             observed_prototype = prototype * prototype_mask
 
         for tau_index, tau in enumerate(tau_grid):
-            if shift_steps is not None:
-                shifted = _shift_with_zeros(observed_prototype, shift_steps[tau_index])
-                shifted_mask = (
-                    _shift_with_zeros(prototype_mask, shift_steps[tau_index])
-                    if prototype_mask is not None
-                    else None
-                )
-            else:
+
                 shifted = np.interp(time_grid - tau, time_grid, observed_prototype, left=0.0, right=0.0)
                 shifted_mask = None
                 if prototype_mask is not None:
@@ -636,7 +611,7 @@ def summarize_prepared_bank(
 
 def prepare_support_bank(
     dataset_names: Sequence[str],
-    *,
+     *,
     term: str = "short",
     to_univariate: bool = False,
     context_length: int | None = None,

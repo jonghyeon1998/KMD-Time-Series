@@ -410,6 +410,35 @@ def stack_future_bank(
     return futures, masks
 
 
+def build_auto_tau_array(
+    series_length: int,
+    *,
+    context_length: int,
+    max_taus: int | None = None,
+    include_current_window: bool = True,
+) -> np.ndarray:
+    if context_length <= 0:
+        raise ValueError("context_length must be positive.")
+
+    max_lookback = int(series_length) - int(context_length)
+    if max_lookback < 0:
+        raise ValueError(
+            f"series_length={series_length} is too short for context_length={context_length}."
+        )
+
+    start_tau = 0 if include_current_window else 1
+    if max_lookback < start_tau:
+        return np.zeros(0, dtype=int)
+
+    valid_taus = np.arange(start_tau, max_lookback + 1, dtype=int)
+    target_count = context_length if max_taus is None else int(max_taus)
+    if target_count <= 0 or valid_taus.size <= target_count:
+        return valid_taus
+
+    keep = np.linspace(0, valid_taus.size - 1, num=target_count, dtype=int)
+    return valid_taus[np.unique(keep)]
+
+
 
 def build_baby_kernel(
     dataset_name: str,
@@ -424,7 +453,10 @@ def build_baby_kernel(
     normalize: bool = True,
     storage_env_var: str = "GIFT_EVAL",
     transform: str = "asinh",
-    imputation_strategy: str = "linear",):
+    imputation_strategy: str = "linear",
+    max_auto_taus: int | None = None,
+    include_current_window: bool = True,
+) -> np.ndarray:
     
     train, _ = load_train_validation_series(
         dataset_name=dataset_name,
@@ -434,41 +466,84 @@ def build_baby_kernel(
         storage_env_var=storage_env_var
     )
 
-    kernel = np.zeros((context_length,context_length))
+    if context_length is None:
+        raise ValueError("context_length must be provided.")
+
+    kernel = np.zeros((context_length, context_length), dtype=float)
 
     series_length = len(train)
     context_raw = train[-context_length:]
     loc, scale = robust_location_scale(context_raw[np.isfinite(context_raw)])
     train_scaled = transform_with_stats(train, loc=loc, scale=scale, transform=transform)
 
-
-    train_filled, _ = impute_missing_1d(train_scaled, strategy=imputation_strategy
-    )
+    train_filled, _ = impute_missing_1d(train_scaled, strategy=imputation_strategy)
     t_context = np.arange(context_length)
     if tau_array is None:
-        for i in range(series_length-context_length):
-            tau = i+series_length-context_length
-            chi = train_filled[i:i+context_length]*np.exp(-alpha*omega**2*(t_context-tau)**2)        
-            kernel += np.outer(chi,chi)
-        if normalize and series_length>0:
-            kernel /= series_length
-            
-    if tau_array is not None:
-        for tau in tau_array:
-            chi = train_filled[series_length-context_length-tau:series_length-tau]*np.exp(-alpha*omega**2*(t_context-tau)**2)
-        if normalize and series_length>0:
-            kernel /= len(tau_array)  
-    
-    
+        tau_values = build_auto_tau_array(
+            series_length,
+            context_length=context_length,
+            max_taus=max_auto_taus,
+            include_current_window=include_current_window,
+        )
+    else:
+        tau_values = np.asarray(tau_array, dtype=int).reshape(-1)
+
+    contribution_count = 0
+    for tau in tau_values:
+        start = series_length - context_length - int(tau)
+        end = series_length - int(tau)
+        if start < 0 or end > series_length or (end - start) != context_length:
+            continue
+
+        chi = train_filled[start:end] * np.exp(-alpha * omega**2 * (t_context - tau) ** 2)
+        kernel += np.outer(chi, chi)
+        contribution_count += 1
+
+    if normalize and contribution_count > 0:
+        kernel /= float(contribution_count)
+
     return kernel
 
-def compute_energy(vector: np.array | None = None, baby_kernel: np.ndarray | None = None, mama_kernel: np.ndarray | None=None, nugget: float = 10**-5):
-    mama_size = mama_kernel.shape[0]
-    
-    Kv = np.linalg.solve(mama_kernel+nugget*np.eye(mama_size),vector)
-    E = np.dot(Kv,baby_kernel@Kv)
-       
-    return E
+def compute_energy(
+    vector: np.ndarray | None = None,
+    baby_kernel: np.ndarray | None = None,
+    mama_kernel: np.ndarray | None = None,
+    nugget: float = 10**-5,
+) -> float:
+    if vector is None or baby_kernel is None or mama_kernel is None:
+        raise ValueError("vector, baby_kernel, and mama_kernel must all be provided.")
+
+    v = np.asarray(vector, dtype=float).reshape(-1)
+    Ki = np.asarray(baby_kernel, dtype=float)
+    K = np.asarray(mama_kernel, dtype=float)
+    if K.ndim != 2 or K.shape[0] != K.shape[1]:
+        raise ValueError("mama_kernel must be a square matrix.")
+    if Ki.shape != K.shape:
+        raise ValueError("baby_kernel must have the same shape as mama_kernel.")
+    if v.shape[0] != K.shape[0]:
+        raise ValueError("vector length must match kernel dimensions.")
+
+    Kv = np.linalg.solve(K + nugget * np.eye(K.shape[0]), v)
+    return float(Kv @ (Ki @ Kv))
+
+
+def _resolve_tau_array(
+    tau_arrays: Sequence[np.ndarray] | dict[tuple[str, int], np.ndarray] | None,
+    *,
+    list_index: int,
+    dataset_name: str,
+    series_index: int,
+) -> np.ndarray | None:
+    if tau_arrays is None:
+        return None
+    if isinstance(tau_arrays, dict):
+        return tau_arrays.get((dataset_name, series_index))
+    if list_index >= len(tau_arrays):
+        raise ValueError(
+            "tau_arrays must either be a dict keyed by (dataset_name, series_index) "
+            "or a sequence aligned with the flattened training-series order."
+        )
+    return tau_arrays[list_index]
 
 
 
@@ -478,7 +553,7 @@ def build_mama_kernel(
     term: str = "short",
     context_length: int | None = None,
     horizon_length: int,
-    tau_arrays: list | None = None,
+    tau_arrays: Sequence[np.ndarray] | dict[tuple[str, int], np.ndarray] | None = None,
     to_univariate: bool = False,
     max_series_per_dataset: int | None = None,
     alpha: float = 1.0,
@@ -488,6 +563,8 @@ def build_mama_kernel(
     transform: str = "asinh",
     imputation_strategy: str = "linear",
     round_down_to_power_of_two: bool = False,
+    max_auto_taus: int | None = None,
+    include_current_window: bool = True,
 ) -> np.ndarray:
     all_series: list[tuple[str, int, np.ndarray]] = []
 
@@ -505,7 +582,7 @@ def build_mama_kernel(
     num_series = len(all_series)
 
     if not all_series:
-        return []
+        return np.zeros((0, 0), dtype=float)
 
     context_length = infer_common_rolling_context_length(
         [series for _, _, series in all_series],
@@ -513,21 +590,30 @@ def build_mama_kernel(
         requested_length=context_length,
         round_down_to_power_of_two=round_down_to_power_of_two,
     )
-    kernel = np.zeros((context_length,context_length))
-    
-    if tau_arrays is None:
-        kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,
-                                    context_length = context_length, tau_array=None,
-                                    to_univariate = to_univariate, alpha= alpha, omega = omega,
-                                    normalize = normalize, storage_env_var = storage_env_var, transform = transform,
-                                    imputation_strategy = imputation_strategy)
-    else:
-        for dataset_name, series_index, series in all_series:
-            kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,
-                                        context_length = context_length, tau_array = tau_arrays[series_index],
-                                        to_univariate = to_univariate, alpha= alpha, omega = omega,
-                                        normalize = normalize, storage_env_var = storage_env_var, transform = transform,
-                                        imputation_strategy = imputation_strategy)
+    kernel = np.zeros((context_length, context_length), dtype=float)
+    for list_index, (dataset_name, series_index, _) in enumerate(all_series):
+        tau_array = _resolve_tau_array(
+            tau_arrays,
+            list_index=list_index,
+            dataset_name=dataset_name,
+            series_index=series_index,
+        )
+        kernel += build_baby_kernel(
+            dataset_name=dataset_name,
+            term=term,
+            series_index=series_index,
+            context_length=context_length,
+            tau_array=tau_array,
+            to_univariate=to_univariate,
+            alpha=alpha,
+            omega=omega,
+            normalize=normalize,
+            storage_env_var=storage_env_var,
+            transform=transform,
+            imputation_strategy=imputation_strategy,
+            max_auto_taus=max_auto_taus,
+            include_current_window=include_current_window,
+        )
             
     if normalize and num_series > 0:
         kernel /= float(num_series)

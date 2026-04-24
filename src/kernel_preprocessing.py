@@ -500,7 +500,7 @@ def build_baby_kernel(
     
     return kernel
 
-def energy(vector: np.array | None = None, baby_kernel: np.ndarray | None = None, mama_kernel: np.ndarray | None=None, nugget: float = 10**-5):
+def compute_energy(vector: np.array | None = None, baby_kernel: np.ndarray | None = None, mama_kernel: np.ndarray | None=None, nugget: float = 10**-5):
     mama_size = mama_kernel.shape[0]
     
     Kv = np.linalg.solve(mama_kernel+nugget*np.eye(mama_size),vector)

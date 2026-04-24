@@ -467,7 +467,7 @@ def build_baby_kernel(
     )
     
 
-    kernel = np.zeros(context_length,context_length)
+    kernel = np.zeros((context_length,context_length))
     train, _ = load_train_validation_series(
     dataset_name,
     term=term,

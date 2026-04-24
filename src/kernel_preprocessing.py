@@ -439,6 +439,24 @@ def build_auto_tau_array(
     return valid_taus[np.unique(keep)]
 
 
+def _tau_localization_weights(
+    *,
+    context_length: int,
+    tau: int,
+    max_lookback: int,
+    alpha: float,
+    omega: float,
+) -> np.ndarray:
+    if context_length <= 0:
+        raise ValueError("context_length must be positive.")
+    if context_length == 1:
+        return np.ones(1, dtype=float)
+
+    t_context = np.linspace(0.0, 1.0, num=context_length, dtype=float)
+    tau_scale = max(int(max_lookback), 1)
+    tau_center = float(np.clip(tau / tau_scale, 0.0, 1.0))
+    return np.exp(-alpha * (omega ** 2) * (t_context - tau_center) ** 2)
+
 
 def build_baby_kernel(
     dataset_name: str,
@@ -477,7 +495,7 @@ def build_baby_kernel(
     train_scaled = transform_with_stats(train, loc=loc, scale=scale, transform=transform)
 
     train_filled, _ = impute_missing_1d(train_scaled, strategy=imputation_strategy)
-    t_context = np.arange(context_length)
+    max_lookback = max(series_length - context_length, 0)
     if tau_array is None:
         tau_values = build_auto_tau_array(
             series_length,
@@ -495,7 +513,14 @@ def build_baby_kernel(
         if start < 0 or end > series_length or (end - start) != context_length:
             continue
 
-        chi = train_filled[start:end] * np.exp(-alpha * omega**2 * (t_context - tau) ** 2)
+        weights = _tau_localization_weights(
+            context_length=context_length,
+            tau=int(tau),
+            max_lookback=max_lookback,
+            alpha=alpha,
+            omega=omega,
+        )
+        chi = train_filled[start:end] * weights
         kernel += np.outer(chi, chi)
         contribution_count += 1
 

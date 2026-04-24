@@ -491,7 +491,7 @@ def build_baby_kernel(
         if normalize and series_length>0:
             kernel /= series_length
             
-    else:
+    if tau_array is not None:
         for tau in tau_array:
             chi = train_filled[series_length-context_length-tau:series_length-tau]*np.exp(-alpha*omega**2*(time_grid[series_length-context_length-tau:series_length-tau])**2)
         if normalize and series_length>0:
@@ -552,14 +552,21 @@ def build_mama_kernel(
         round_down_to_power_of_two=round_down_to_power_of_two,
     )
     kernel = np.zeros((context_length,context_length))
-
-    for dataset_name, series_index, series in all_series:
+    
+    if tau_arrays is None:
         kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,
-                                    context_length = context_length, tau_array = tau_arrays[series_index],
+                                    context_length = context_length, tau_array=None,
                                     to_univariate = to_univariate, alpha= alpha, omega = omega,
                                     normalize = normalize, storage_env_var = storage_env_var, transform = transform,
                                     imputation_strategy = imputation_strategy)
-         
+    else:
+        for dataset_name, series_index, series in all_series:
+            kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,
+                                        context_length = context_length, tau_array = tau_arrays[series_index],
+                                        to_univariate = to_univariate, alpha= alpha, omega = omega,
+                                        normalize = normalize, storage_env_var = storage_env_var, transform = transform,
+                                        imputation_strategy = imputation_strategy)
+            
     if normalize and series > 0:
         kernel /= float(num_series)
 

@@ -551,7 +551,7 @@ def build_mama_kernel(
         requested_length=context_length,
         round_down_to_power_of_two=round_down_to_power_of_two,
     )
-    kernel = np.zeros(context_length,context_length)
+    kernel = np.zeros((context_length,context_length))
 
     for dataset_name, series_index, series in all_series:
         kernel += build_baby_kernel(dataset_name=dataset_name,term="short", series_index= series_index,

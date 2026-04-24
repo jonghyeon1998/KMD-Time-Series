@@ -1,0 +1,54 @@
+{
+  "unseen_name": "restaurant",
+  "support_count": 162,
+  "full_metrics": {
+    "scaled_relative_l2_error": 1.1950879419388314,
+    "unscaled_relative_l2_error": 0.6206755406047222,
+    "scaled_relative_mae": 1.2367529319126422,
+    "unscaled_relative_mae": 0.6439024986223832
+  },
+  "top1_metrics": {
+    "k": 1,
+    "scaled_relative_l2_error": 0.9999999975774865,
+    "unscaled_relative_l2_error": 0.5427922957444322,
+    "scaled_relative_mae": 0.9999999852024205,
+    "unscaled_relative_mae": 0.5209205017978064,
+    "energy_fraction": 0.043609875358020696,
+    "top_dataset_count": 1,
+    "top_dataset_name": "covid_deaths"
+  },
+  "best_topk": {
+    "k": 20,
+    "metrics": {
+      "k": 20,
+      "scaled_relative_l2_error": 0.9601645751914094,
+      "unscaled_relative_l2_error": 0.5217872651671503,
+      "scaled_relative_mae": 0.9626360629293097,
+      "unscaled_relative_mae": 0.5056705852492053,
+      "energy_fraction": 0.3803180857682349,
+      "top_dataset_count": 3,
+      "top_dataset_name": "covid_deaths"
+    }
+  },
+  "best_dataset_subset": {
+    "dataset_name": "solar/D",
+    "series_count": 20,
+    "energy_fraction": 0.2823291592689608,
+    "scaled_relative_l2_error": 0.9935907281968669,
+    "unscaled_relative_l2_error": 0.5362353897127835,
+    "scaled_relative_mae": 0.9947398938267309,
+    "unscaled_relative_mae": 0.5187908733855544
+  },
+  "dataset_energy": {
+    "solar/D": 0.0061055531335415135,
+    "hierarchical_sales/D": 0.004534174979689359,
+    "kdd_cup_2018_with_missing/D": 0.0034317181094711473,
+    "covid_deaths": 0.002061436289557522,
+    "LOOP_SEATTLE/D": 0.0018175644086993472,
+    "electricity/D": 0.001764453712436274,
+    "M_DENSE/D": 0.0010858597957261907,
+    "temperature_rain_with_missing": 0.0007990633356015103,
+    "saugeenday/D": 1.5217540255161085e-05,
+    "us_births/D": 1.0614186472857594e-05
+  }
+}

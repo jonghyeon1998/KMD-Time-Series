@@ -1,20 +1,21 @@
 {
-  "config": {
-    "context_length": 64,
-    "horizon_length": 30,
-    "alpha": 1.0,
-    "omega": 0.75,
-    "lambda_k": 1e-05,
-    "lambda_gamma": 0.01,
-    "max_series_per_dataset": 20,
-    "max_auto_taus": 32
-  },
+  "unseen_name": "us_births/D",
   "support_count": 181,
   "full_metrics": {
     "scaled_relative_l2_error": 0.8678453318539693,
     "unscaled_relative_l2_error": 0.09284230726806046,
     "scaled_relative_mae": 1.0385157125387312,
     "unscaled_relative_mae": 0.07976137112663995
+  },
+  "top1_metrics": {
+    "k": 1,
+    "scaled_relative_l2_error": 0.8652318808011932,
+    "unscaled_relative_l2_error": 0.10445184314896881,
+    "scaled_relative_mae": 0.9719109870542919,
+    "unscaled_relative_mae": 0.07826852263298845,
+    "energy_fraction": 0.01865911754410195,
+    "top_dataset_count": 1,
+    "top_dataset_name": "M_DENSE/D"
   },
   "best_topk": {
     "k": 128,

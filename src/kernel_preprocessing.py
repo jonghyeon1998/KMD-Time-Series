@@ -567,7 +567,7 @@ def build_mama_kernel(
                                         normalize = normalize, storage_env_var = storage_env_var, transform = transform,
                                         imputation_strategy = imputation_strategy)
             
-    if normalize and series > 0:
+    if normalize and num_series > 0:
         kernel /= float(num_series)
 
     return kernel

@@ -13,8 +13,7 @@ EPS = 1e-8
 @dataclass(frozen=True)
 class PreparedKernelSeries:
     name: str
-    raw_train: np.ndarray
-    raw_future: np.ndarray
+    train_raw: np.ndarray
     context_raw: np.ndarray
     future_raw: np.ndarray
     train_mask: np.ndarray
@@ -294,8 +293,7 @@ def prepare_kernel_series(
 
     return PreparedKernelSeries(
         name=name,
-        raw_train=train,
-        raw_future=future,
+        train_raw=train,
         context_raw=context_raw,
         future_raw=future_raw,
         train_mask=train_mask,
@@ -387,17 +385,6 @@ def prepare_dataset_bank(
 
     return prepared_train, prepared_unseen
 
-def stack_train_bank(
-    train_series: Sequence[PreparedKernelSeries],
-    *,
-    include_masks: bool = False,
-) -> tuple[np.ndarray, np.ndarray | None]:
-    trains = np.vstack([series.train_filled for series in train_series])
-    if not include_masks:
-        return trains, None
-    masks = np.vstack([series.train_mask.astype(float) for series in train_series])
-    return trains, masks
-
 
 def stack_context_bank(
     prepared_series: Sequence[PreparedKernelSeries],
@@ -422,27 +409,6 @@ def stack_future_bank(
     masks = np.vstack([series.future_mask.astype(float) for series in prepared_series])
     return futures, masks
 
-
-def normalized_time_grid(length: int) -> np.ndarray:
-    if length < 2:
-        return np.zeros(length, dtype=float)
-    return np.linspace(0.0, 1.0, length, dtype=float)
-
-
-def _shift_with_zeros(values: np.ndarray, shift_steps: int) -> np.ndarray:
-    arr = np.asarray(values, dtype=float)
-    shifted = np.zeros_like(arr)
-    if shift_steps == 0:
-        shifted[:] = arr
-        return shifted
-
-    if shift_steps > 0:
-        shifted[shift_steps:] = arr[:-shift_steps]
-        return shifted
-
-    shifted[:shift_steps] = arr[-shift_steps:]
-    return shifted
-
 def build_baby_kernel(
     dataset_name: str,
     *,
@@ -460,21 +426,14 @@ def build_baby_kernel(
     
     train, _ = load_train_validation_series(
         dataset_name,
-        term=term,
-        series_index=series_index,
-        to_univariate=to_univariate,
-        storage_env_var=storage_env_var,
+        term,
+        series_index,
+        to_univariate,
+        storage_env_var
     )
-    
 
     kernel = np.zeros((context_length,context_length))
-    train, _ = load_train_validation_series(
-    dataset_name,
-    term=term,
-    series_index=series_index,
-    to_univariate= False,
-    storage_env_var= "GIFT_EVAL",
-)
+
     series_length = len(train)
     context_raw = train[-context_length:]
     loc, scale = robust_location_scale(context_raw[np.isfinite(context_raw)])
@@ -483,19 +442,20 @@ def build_baby_kernel(
 
     train_filled, _ = impute_missing_1d(train_scaled, strategy=imputation_strategy
     )
+    t_context = np.arange(context_length)
     if tau_array is None:
-        time_grid = np.arange(context_length-series_length,context_length)
         for i in range(series_length-context_length):
-            chi = train_filled[i:i+context_length]*np.exp(-alpha*omega**2*(series_length-context_length-time_grid[i:i+context_length])**2)        
+            tau = i+series_length-context_length
+            chi = train_filled[i:i+context_length]*np.exp(-alpha*omega**2*(t_context-tau)**2)        
             kernel += np.outer(chi,chi)
         if normalize and series_length>0:
             kernel /= series_length
             
     if tau_array is not None:
         for tau in tau_array:
-            chi = train_filled[series_length-context_length-tau:series_length-tau]*np.exp(-alpha*omega**2*(time_grid[series_length-context_length-tau:series_length-tau])**2)
+            chi = train_filled[series_length-context_length-tau:series_length-tau]*np.exp(-alpha*omega**2*(t_context-tau)**2)
         if normalize and series_length>0:
-            kernel /= series_length   
+            kernel /= len(tau_array)  
     
     
     return kernel

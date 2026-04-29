@@ -1,0 +1,61 @@
+{
+  "config": {
+    "train_families": [
+      "covid_deaths",
+      "electricity/D",
+      "hierarchical_sales/D",
+      "LOOP_SEATTLE/D",
+      "temperature_rain_with_missing"
+    ],
+    "temperature_sample_fraction": 0.1,
+    "temperature_sample_size": 3207,
+    "rng_seed": 0,
+    "context_length": 100,
+    "horizon_length": 30,
+    "alpha": 1.0,
+    "omega": 0.75,
+    "lambda_k": 1e-05,
+    "lambda_gamma": 0.01,
+    "max_auto_taus": 32
+  },
+  "train_series_counts": {
+    "covid_deaths": 266,
+    "electricity/D": 370,
+    "hierarchical_sales/D": 118,
+    "LOOP_SEATTLE/D": 323,
+    "temperature_rain_with_missing": 3207
+  },
+  "prediction_plots": {
+    "saugeenday/D": "/Users/jonghyeonlee/KMD_TS/experiments/daily_fixed_train_family_targets/saugeenday__D_prediction.png",
+    "us_births/D": "/Users/jonghyeonlee/KMD_TS/experiments/daily_fixed_train_family_targets/us_births__D_prediction.png",
+    "solar/D": "/Users/jonghyeonlee/KMD_TS/experiments/daily_fixed_train_family_targets/solar__D_prediction_grid.png"
+  },
+  "error_plot": "/Users/jonghyeonlee/KMD_TS/experiments/daily_fixed_train_family_targets/daily_fixed_train_family_targets_l2_bar.png",
+  "aggregate_metrics": [
+    {
+      "target_dataset": "saugeenday/D",
+      "series_index": "MEAN",
+      "series_count": 1,
+      "full_mean_raw_l2": 0.6595022188831045,
+      "top1_mean_raw_l2": 0.8585528467984312,
+      "family_mean_raw_l2": 0.645987982801831
+    },
+    {
+      "target_dataset": "solar/D",
+      "series_index": "MEAN",
+      "series_count": 137,
+      "full_mean_raw_l2": 0.4663848939639763,
+      "top1_mean_raw_l2": 0.47809164801187376,
+      "family_mean_raw_l2": 0.46125083814956824
+    },
+    {
+      "target_dataset": "us_births/D",
+      "series_index": "MEAN",
+      "series_count": 1,
+      "full_mean_raw_l2": 0.09298105944425482,
+      "top1_mean_raw_l2": 0.11239231812009011,
+      "family_mean_raw_l2": 0.13068155237028392
+    }
+  ],
+  "note": "us_births/D contains only one daily series, so the output includes its single forecast plot. The 5-panel plot is shown for solar/D, which is the multi-series target."
+}

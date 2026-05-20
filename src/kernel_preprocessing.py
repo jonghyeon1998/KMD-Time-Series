@@ -63,6 +63,12 @@ def load_train_validation_series(
     to_univariate: bool = False,
     storage_env_var: str = "GIFT_EVAL",
 ) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return the training prefix and the extra validation block beyond that prefix.
+
+    If `train` is the training series and `val_full` is the validation series for the
+    same item, then this function returns `(train, val_full[len(train):])`.
+    """
     dataset = Dataset(
         name=dataset_name,
         term=term,
@@ -76,6 +82,65 @@ def load_train_validation_series(
     val_full = _as_1d_array(val_entry["target"], f"{dataset_name} validation target")
     future = val_full[len(train) :]
     return train, future
+
+
+def load_validation_minus_train_series(
+    dataset_name: str,
+    *,
+    term: str = "short",
+    series_index: int = 0,
+    to_univariate: bool = False,
+    storage_env_var: str = "GIFT_EVAL",
+) -> np.ndarray:
+    """
+    Return the portion of the validation series that is not already contained in train.
+    """
+    _, validation_minus_train = load_train_validation_series(
+        dataset_name,
+        term=term,
+        series_index=series_index,
+        to_univariate=to_univariate,
+        storage_env_var=storage_env_var,
+    )
+    return validation_minus_train
+
+
+def load_validation_minus_train_collection(
+    dataset_name: str,
+    *,
+    term: str = "short",
+    to_univariate: bool = False,
+    storage_env_var: str = "GIFT_EVAL",
+    max_series: int | None = None,
+) -> list[tuple[int, np.ndarray]]:
+    """
+    Return `(series_index, validation_minus_train)` for each series in the dataset.
+    """
+    dataset = Dataset(
+        name=dataset_name,
+        term=term,
+        to_univariate=to_univariate,
+        storage_env_var=storage_env_var,
+    )
+
+    holdout_collection: list[tuple[int, np.ndarray]] = []
+    for series_index, (train_entry, val_entry) in enumerate(
+        zip(dataset.training_dataset, dataset.validation_dataset)
+    ):
+        if max_series is not None and series_index >= max_series:
+            break
+
+        train = _as_1d_array(
+            train_entry["target"],
+            f"{dataset_name} training target[{series_index}]",
+        )
+        val_full = _as_1d_array(
+            val_entry["target"],
+            f"{dataset_name} validation target[{series_index}]",
+        )
+        holdout_collection.append((series_index, val_full[len(train) :]))
+
+    return holdout_collection
 
 
 def load_training_series_collection(

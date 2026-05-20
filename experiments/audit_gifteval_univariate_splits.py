@@ -31,8 +31,12 @@ class AuditRow:
     train_max_len: int
     val_min_len: int
     val_max_len: int
+    test_context_min_len: int
+    test_context_max_len: int
+    n_test_windows_per_series: int
     train_is_validation_prefix_all: bool
     validation_is_first_test_context_all: bool
+    validation_is_prefix_of_all_test_contexts_all: bool
     test_contexts_match_raw_prefix_all: bool
     test_labels_match_raw_suffix_all: bool
     any_missing_raw: bool
@@ -81,6 +85,7 @@ def audit_dataset(name: str) -> AuditRow | None:
     raw_lengths: list[int] = []
     train_lengths: list[int] = []
     val_lengths: list[int] = []
+    test_context_lengths: list[int] = []
 
     raw_missing = train_missing = val_missing = 0
     test_context_missing = test_label_missing = 0
@@ -89,6 +94,7 @@ def audit_dataset(name: str) -> AuditRow | None:
 
     train_is_val_prefix_all = True
     val_is_first_test_context_all = True
+    val_is_prefix_of_all_test_contexts_all = True
     test_contexts_match_raw_prefix_all = True
     test_labels_match_raw_suffix_all = True
 
@@ -121,6 +127,7 @@ def audit_dataset(name: str) -> AuditRow | None:
         for window_idx in range(ds.windows):
             test_input = np.asarray(next(test_input_it)["target"], dtype=float)
             test_label = np.asarray(next(test_label_it)["target"], dtype=float)
+            test_context_lengths.append(int(test_input.shape[0]))
 
             expected_context_end = len(val) + window_idx * ds.prediction_length
             expected_label_start = expected_context_end
@@ -128,6 +135,8 @@ def audit_dataset(name: str) -> AuditRow | None:
 
             if window_idx == 0:
                 val_is_first_test_context_all &= _equal(test_input, val)
+
+            val_is_prefix_of_all_test_contexts_all &= _equal(test_input[: len(val)], val)
 
             test_contexts_match_raw_prefix_all &= _equal(test_input, raw[:expected_context_end])
             test_labels_match_raw_suffix_all &= _equal(
@@ -155,8 +164,12 @@ def audit_dataset(name: str) -> AuditRow | None:
         train_max_len=max(train_lengths),
         val_min_len=min(val_lengths),
         val_max_len=max(val_lengths),
+        test_context_min_len=min(test_context_lengths),
+        test_context_max_len=max(test_context_lengths),
+        n_test_windows_per_series=int(ds.windows),
         train_is_validation_prefix_all=train_is_val_prefix_all,
         validation_is_first_test_context_all=val_is_first_test_context_all,
+        validation_is_prefix_of_all_test_contexts_all=val_is_prefix_of_all_test_contexts_all,
         test_contexts_match_raw_prefix_all=test_contexts_match_raw_prefix_all,
         test_labels_match_raw_suffix_all=test_labels_match_raw_suffix_all,
         any_missing_raw=raw_missing > 0,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Literal, Sequence
 
 import numpy as np
@@ -175,6 +175,29 @@ def build_regular_deltas(length: int, *, step: float = 1.0, initial_delta: float
     delta0 = float(step if initial_delta is None else initial_delta)
     deltas = np.full(length, float(step), dtype=float)
     deltas[0] = delta0
+    return deltas
+
+
+def build_gap_deltas_from_mask(
+    observed_mask: np.ndarray,
+    *,
+    step: float = 1.0,
+    initial_delta: float | None = None,
+) -> np.ndarray:
+    mask = np.asarray(observed_mask, dtype=bool).reshape(-1)
+    if mask.size == 0:
+        return np.zeros(0, dtype=float)
+    if step <= 0:
+        raise ValueError(f"step must be positive. Received {step}.")
+
+    deltas = np.empty(mask.size, dtype=float)
+    current_gap = float(step if initial_delta is None else initial_delta)
+    for idx in range(mask.size):
+        deltas[idx] = current_gap
+        if mask[idx]:
+            current_gap = float(step)
+        else:
+            current_gap += float(step)
     return deltas
 
 
@@ -361,6 +384,54 @@ def build_interleaved_features(
     features[:, 0::2] = X_clean
     features[:, 1::2] = D
     return features
+
+
+def build_observed_interleaved_features(
+    values: np.ndarray,
+    deltas: np.ndarray,
+    *,
+    masks: np.ndarray | None = None,
+    max_observed_count: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    X = _ensure_2d(values, "values")
+    D = _ensure_2d(deltas, "deltas")
+    if X.shape != D.shape:
+        raise ValueError("values and deltas must have the same shape for interleaving.")
+
+    if masks is None:
+        M = np.isfinite(X)
+    else:
+        M = np.asarray(masks, dtype=bool)
+        if M.shape != X.shape:
+            raise ValueError("values and masks must have the same shape.")
+        M &= np.isfinite(X)
+
+    observed_counts = M.sum(axis=1).astype(int)
+    if max_observed_count is None:
+        max_observed = int(observed_counts.max()) if observed_counts.size > 0 else 0
+    else:
+        max_observed = int(max_observed_count)
+        if max_observed < 0:
+            raise ValueError("max_observed_count must be non-negative.")
+        if observed_counts.size > 0 and int(observed_counts.max()) > max_observed:
+            raise ValueError(
+                "max_observed_count is smaller than the number of observed entries in at least one sample."
+            )
+
+    features = np.zeros((X.shape[0], 2 * max_observed), dtype=float)
+    feature_mask = np.zeros((X.shape[0], 2 * max_observed), dtype=bool)
+
+    for row_idx in range(X.shape[0]):
+        obs_idx = np.flatnonzero(M[row_idx])
+        n_obs = int(obs_idx.size)
+        if n_obs == 0:
+            continue
+        stop = 2 * n_obs
+        features[row_idx, 0:stop:2] = X[row_idx, obs_idx]
+        features[row_idx, 1:stop:2] = D[row_idx, obs_idx]
+        feature_mask[row_idx, :stop] = True
+
+    return features, feature_mask
 
 
 def _resolve_gamma(config: KernelConfig, feature_dim: int) -> float:
@@ -596,13 +667,47 @@ def build_window_kernel_matrix(
     if rep == "interleaved":
         if context_deltas is None:
             raise ValueError("context_deltas must be provided for representation='interleaved'.")
-        X_feat = build_interleaved_features(X, context_deltas, masks=context_masks)
+        X_mask = np.isfinite(X) if context_masks is None else np.asarray(context_masks, dtype=bool)
+        if X_mask.shape != X.shape:
+            raise ValueError("contexts and context_masks must have the same shape.")
         if Y is None:
-            return build_feature_kernel_matrix(X_feat, config=config)
+            X_feat, X_feat_mask = build_observed_interleaved_features(
+                X,
+                context_deltas,
+                masks=X_mask,
+            )
+            return build_masked_kernel_matrix(
+                X_feat,
+                X_feat_mask,
+                config=replace(config, mask_mode="none"),
+            )
         if other_deltas is None:
             raise ValueError("other_deltas must be provided when using interleaved cross-kernels.")
-        Y_feat = build_interleaved_features(Y, other_deltas, masks=other_masks)
-        return build_feature_kernel_matrix(X_feat, Y_feat, config=config)
+        Y_mask = np.isfinite(Y) if other_masks is None else np.asarray(other_masks, dtype=bool)
+        if Y_mask.shape != Y.shape:
+            raise ValueError("other_contexts and other_masks must have the same shape.")
+        max_obs_x = int(X_mask.sum(axis=1).max()) if X_mask.shape[0] > 0 else 0
+        max_obs_y = int(Y_mask.sum(axis=1).max()) if Y_mask.shape[0] > 0 else 0
+        max_obs = max(max_obs_x, max_obs_y)
+        X_feat, X_feat_mask = build_observed_interleaved_features(
+            X,
+            context_deltas,
+            masks=X_mask,
+            max_observed_count=max_obs,
+        )
+        Y_feat, Y_feat_mask = build_observed_interleaved_features(
+            Y,
+            other_deltas,
+            masks=Y_mask,
+            max_observed_count=max_obs,
+        )
+        return build_masked_kernel_matrix(
+            X_feat,
+            X_feat_mask,
+            Y_feat,
+            Y_feat_mask,
+            config=replace(config, mask_mode="none"),
+        )
 
     if rep == "masked":
         if context_masks is None:

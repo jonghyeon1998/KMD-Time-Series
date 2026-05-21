@@ -54,6 +54,7 @@ def import_cell() -> str:
         from src.window_krr import (
             KernelConfig,
             WindowKernelRidgeForecaster,
+            build_gap_deltas_from_mask,
             build_regular_deltas,
             make_windowed_forecasting_dataset,
             relative_l2_error,
@@ -93,6 +94,12 @@ def parameter_cell(dataset_name: str) -> str:
         MASK_SIMILARITY = "jaccard"  # one of: "jaccard", "overlap_fraction", "dot"
         MASK_WEIGHT = 1.0
         REGULARIZATION = 1e-2
+
+        # Delta handling for the interleaved representation.
+        # "regular" means every step has the same delta.
+        # "since_last_observed" turns missing stretches into increasing deltas.
+        DELTA_MODE = "regular"       # one of: "regular", "since_last_observed"
+        DELTA_STEP = 1.0
 
         # Test-time controls
         TEST_WINDOW_INDEX = 0
@@ -184,6 +191,18 @@ def helper_cell() -> str:
             )
 
 
+        def _build_deltas_from_values(values: np.ndarray) -> np.ndarray:
+            observed_mask = np.isfinite(values)
+            if DELTA_MODE == "regular":
+                return build_regular_deltas(len(values), step=DELTA_STEP)
+            if DELTA_MODE == "since_last_observed":
+                return build_gap_deltas_from_mask(observed_mask, step=DELTA_STEP)
+            raise ValueError(
+                f"Unsupported DELTA_MODE={{DELTA_MODE}}. "
+                "Supported modes are 'regular' and 'since_last_observed'."
+            )
+
+
         def _build_window_bank_from_split(
             split_name: str,
             *,
@@ -219,7 +238,7 @@ def helper_cell() -> str:
                     break
                 values = _series_from_entry(entry)
                 observed_mask = np.isfinite(values)
-                deltas = build_regular_deltas(len(values))
+                deltas = _build_deltas_from_values(values)
                 try:
                     windowed = make_windowed_forecasting_dataset(
                         values,
@@ -378,7 +397,7 @@ def short_term_cell() -> str:
             strategy="direct",
             total_horizon=short_horizon,
             query_masks=np.isfinite(short_query),
-            query_deltas=build_regular_deltas(CONTEXT_LENGTH),
+            query_deltas=_build_deltas_from_values(short_query),
         ).reshape(-1)
 
         short_true = val_extra[:short_horizon]
@@ -448,7 +467,7 @@ def long_term_cell() -> str:
             strategy="direct",
             total_horizon=long_horizon,
             query_masks=np.isfinite(long_query),
-            query_deltas=build_regular_deltas(CONTEXT_LENGTH),
+            query_deltas=_build_deltas_from_values(long_query),
         ).reshape(-1)
 
         long_true = test_label[:long_horizon]
@@ -476,7 +495,7 @@ def long_term_cell() -> str:
                 strategy="direct",
                 total_horizon=long_horizon,
                 query_masks=np.isfinite(ctx[-CONTEXT_LENGTH:]),
-                query_deltas=build_regular_deltas(CONTEXT_LENGTH),
+                query_deltas=_build_deltas_from_values(ctx[-CONTEXT_LENGTH:]),
             ).reshape(-1)
             truth = lbl[:long_horizon]
             rolling_errors.append(relative_l2_error(truth, pred, mask=np.isfinite(truth)))
@@ -519,8 +538,8 @@ def recursive_cell() -> str:
             total_horizon=recursive_total_horizon,
             chunk_length=recursive_chunk_length,
             query_masks=np.isfinite(recursive_query),
-            query_deltas=build_regular_deltas(CONTEXT_LENGTH),
-            future_deltas=np.ones((1, recursive_total_horizon), dtype=float),
+            query_deltas=_build_deltas_from_values(recursive_query),
+            future_deltas=np.full((1, recursive_total_horizon), DELTA_STEP, dtype=float),
         ).reshape(-1)
 
         recursive_true = recursive_truth[:recursive_total_horizon]
@@ -562,6 +581,27 @@ def make_notebook(dataset_name: str) -> nbf.NotebookNode:
         nbf.v4.new_code_cell(setup_cell()),
         nbf.v4.new_code_cell(import_cell()),
         nbf.v4.new_code_cell(parameter_cell(dataset_name)),
+        nbf.v4.new_markdown_cell(
+            dedent(
+                """
+                ## Kernel Representations
+
+                Set `REPRESENTATION` in the parameter cell to:
+                - `"masked"` for the mask-aware kernel `k((x,m),(x',m'))`
+                - `"interleaved"` for the observed-only interleaved feature map
+                  `z=(x_{j_1},Δ_{j_1},...,x_{j_r},Δ_{j_r})`, where `j_1 < ... < j_r` are the observed indices
+                - `"plain"` for value-only kernels
+
+                For interleaved kernels:
+                - `DELTA_MODE="regular"` uses constant time steps
+                - `DELTA_MODE="since_last_observed"` increases the delta across missing stretches
+
+                Note: internally, interleaved features are stored in padded arrays only so they can
+                fit in a matrix, but padded coordinates are always masked out of the kernel. They
+                do not contribute as zero-valued observations.
+                """
+            ).strip()
+        ),
         nbf.v4.new_code_cell(metadata_cell()),
         nbf.v4.new_code_cell(helper_cell()),
         nbf.v4.new_code_cell(preview_cell()),

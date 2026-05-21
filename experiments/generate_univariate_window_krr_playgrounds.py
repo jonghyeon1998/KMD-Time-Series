@@ -104,6 +104,7 @@ def parameter_cell(dataset_name: str) -> str:
         # Test-time controls
         TEST_WINDOW_INDEX = 0
         ROLLING_TEST_WINDOW_LIMIT = None     # set to an integer to cap rolling evaluation windows
+        PLOT_STITCHED_TEST_TAIL = True       # plot the concatenated direct test-tail forecast
         RECURSIVE_TOTAL_HORIZON = None       # defaults to dataset.windows * dataset.prediction_length
         RECURSIVE_CHUNK_LENGTH = None        # defaults to LONG_HORIZON
 
@@ -174,6 +175,24 @@ def helper_cell() -> str:
             for window_index in range(n_windows):
                 pairs.append(_get_test_pair(series_index, window_index))
             return pairs
+
+
+        def _get_test_tail(series_index: int, *, limit: int | None = None) -> np.ndarray:
+            label_blocks = [
+                _series_from_entry(label_entry)
+                for _, label_entry in _get_all_test_pairs_for_series(series_index, limit=limit)
+            ]
+            if not label_blocks:
+                return np.empty((0,), dtype=float)
+            return np.concatenate(label_blocks)
+
+
+        def _get_validation_plus_test_series(series_index: int, *, limit: int | None = None) -> np.ndarray:
+            val = _series_from_entry(_get_validation_entry(series_index))
+            test_tail = _get_test_tail(series_index, limit=limit)
+            if test_tail.size == 0:
+                return val.copy()
+            return np.concatenate([val, test_tail])
 
 
         def _validation_minus_train(series_index: int) -> np.ndarray:
@@ -500,9 +519,12 @@ def long_term_cell() -> str:
 
         direct_errors = []
         direct_skipped = []
+        stitched_errors = []
+        stitched_skipped = []
         rolling_means = []
         rolling_skipped = []
-        plotted = False
+        block_plotted = False
+        stitched_plotted = False
 
         for eval_series_index in _evaluation_series_indices():
             test_context_entry, test_label_entry = _get_test_pair(eval_series_index, TEST_WINDOW_INDEX)
@@ -530,7 +552,7 @@ def long_term_cell() -> str:
             direct_errors.append(long_rel_l2)
 
             should_plot = (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
-                EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not plotted
+                EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not block_plotted
             )
             if should_plot:
                 _plot_forecast(
@@ -539,10 +561,12 @@ def long_term_cell() -> str:
                     title=f"{DATASET_NAME} long-term direct forecast: validation -> test window {TEST_WINDOW_INDEX} (series {eval_series_index})",
                     mask=long_mask,
                 )
-                plotted = True
+                block_plotted = True
 
             all_pairs = _get_all_test_pairs_for_series(eval_series_index, limit=ROLLING_TEST_WINDOW_LIMIT)
             per_series_rolling = []
+            stitched_truth_blocks = []
+            stitched_pred_blocks = []
             for pair_index, (ctx_entry, lbl_entry) in enumerate(all_pairs):
                 ctx = _series_from_entry(ctx_entry)
                 lbl = _series_from_entry(lbl_entry)
@@ -557,21 +581,53 @@ def long_term_cell() -> str:
                 ).reshape(-1)
                 truth = lbl[:long_horizon]
                 per_series_rolling.append(relative_l2_error(truth, pred, mask=np.isfinite(truth)))
+                stitched_truth_blocks.append(truth)
+                stitched_pred_blocks.append(pred)
 
             if per_series_rolling:
                 rolling_means.append(float(np.mean(per_series_rolling)))
             else:
                 rolling_skipped.append((eval_series_index, "no valid rolling test windows"))
 
+            if stitched_truth_blocks:
+                stitched_true = np.concatenate(stitched_truth_blocks)
+                stitched_pred = np.concatenate(stitched_pred_blocks)
+                stitched_mask = np.isfinite(stitched_true)
+                stitched_errors.append(relative_l2_error(stitched_true, stitched_pred, mask=stitched_mask))
+
+                should_plot_stitched = PLOT_STITCHED_TEST_TAIL and (
+                    (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
+                        EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not stitched_plotted
+                    )
+                )
+                if should_plot_stitched:
+                    _plot_forecast(
+                        stitched_true,
+                        stitched_pred,
+                        title=f"{DATASET_NAME} stitched direct forecast over concatenated test tail (series {eval_series_index})",
+                        mask=stitched_mask,
+                    )
+                    stitched_plotted = True
+            else:
+                stitched_skipped.append((eval_series_index, "no valid stitched test-tail blocks"))
+
         print("Selected test window index:", TEST_WINDOW_INDEX)
         if EVALUATE_ALL_SERIES:
             _print_error_summary("Long-term direct", direct_errors, direct_skipped)
+            if stitched_errors:
+                _print_error_summary("Long-term stitched-tail direct", stitched_errors, stitched_skipped)
+            else:
+                print("No stitched direct test-tail forecasts could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
             if rolling_means:
                 _print_error_summary("Long-term rolling-mean", rolling_means, rolling_skipped)
             else:
                 print("No rolling test windows could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
         else:
             print("Long-term relative L2     :", direct_errors[0])
+            if stitched_errors:
+                print("Stitched direct tail L2   :", stitched_errors[0])
+            else:
+                print("No stitched direct test-tail forecast could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
             if rolling_means:
                 print("Rolling test windows evaluated:", len(_get_all_test_pairs_for_series(SERIES_INDEX, limit=ROLLING_TEST_WINDOW_LIMIT)))
                 print("Rolling mean relative L2      :", rolling_means[0])
@@ -602,9 +658,7 @@ def recursive_cell() -> str:
                 recursive_skipped.append((eval_series_index, "context longer than validation prefix"))
                 continue
 
-            test_pairs = _get_all_test_pairs_for_series(eval_series_index)
-            recursive_truth_blocks = [_series_from_entry(label_entry) for _, label_entry in test_pairs]
-            recursive_truth = np.concatenate(recursive_truth_blocks)
+            recursive_truth = _get_test_tail(eval_series_index)
             recursive_mask = np.isfinite(recursive_truth)
 
             recursive_total_horizon = len(recursive_truth) if RECURSIVE_TOTAL_HORIZON is None else int(RECURSIVE_TOTAL_HORIZON)
@@ -635,7 +689,7 @@ def recursive_cell() -> str:
                 _plot_forecast(
                     recursive_true,
                     recursive_pred,
-                    title=f"{DATASET_NAME} recursive forecast from validation endpoint (series {eval_series_index})",
+                    title=f"{DATASET_NAME} recursive forecast over concatenated test tail from validation endpoint (series {eval_series_index})",
                     mask=recursive_true_mask,
                 )
                 plotted = True

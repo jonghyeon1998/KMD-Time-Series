@@ -106,6 +106,11 @@ def parameter_cell(dataset_name: str) -> str:
         ROLLING_TEST_WINDOW_LIMIT = None     # set to an integer to cap rolling evaluation windows
         RECURSIVE_TOTAL_HORIZON = None       # defaults to dataset.windows * dataset.prediction_length
         RECURSIVE_CHUNK_LENGTH = None        # defaults to LONG_HORIZON
+
+        # Evaluation scope
+        EVALUATE_ALL_SERIES = False          # if False, evaluate SERIES_INDEX only
+        EVAL_SERIES_LIMIT = None             # optional cap when EVALUATE_ALL_SERIES=True
+        PLOT_FIRST_SERIES_WHEN_AGGREGATING = False
         """
     ).strip()
 
@@ -310,6 +315,27 @@ def helper_cell() -> str:
             plt.legend()
             plt.grid(alpha=0.25)
             plt.show()
+
+
+        def _evaluation_series_indices():
+            if not EVALUATE_ALL_SERIES:
+                return [SERIES_INDEX]
+            limit = len(dataset.hf_dataset) if EVAL_SERIES_LIMIT is None else min(int(EVAL_SERIES_LIMIT), len(dataset.hf_dataset))
+            if limit <= 0:
+                raise ValueError("EVAL_SERIES_LIMIT must be positive when provided.")
+            return list(range(limit))
+
+
+        def _print_error_summary(name: str, errors: list[float], skipped: list[tuple[int, str]]):
+            if not errors:
+                raise ValueError(f"No valid evaluation series were available for {name}.")
+            arr = np.asarray(errors, dtype=float)
+            print(f"{name} evaluated series:", len(errors))
+            print(f"{name} skipped series  :", len(skipped))
+            print(f"{name} mean relative L2:", float(np.mean(arr)))
+            print(f"{name} median relative L2:", float(np.median(arr)))
+            print(f"{name} min relative L2 :", float(np.min(arr)))
+            print(f"{name} max relative L2 :", float(np.max(arr)))
         """
     ).strip()
 
@@ -358,17 +384,18 @@ def short_term_cell() -> str:
             raise ValueError("SHORT_HORIZON must be positive.")
 
         val_extra = _validation_minus_train(SERIES_INDEX)
-        if short_horizon > len(val_extra):
-            raise ValueError(
-                f"SHORT_HORIZON={{short_horizon}} exceeds len(validation\\\\train)={{len(val_extra)}}. "
-                "Reduce SHORT_HORIZON or use a different development target."
-            )
+        if not EVALUATE_ALL_SERIES:
+            if short_horizon > len(val_extra):
+                raise ValueError(
+                    f"SHORT_HORIZON={{short_horizon}} exceeds len(validation\\\\train)={{len(val_extra)}}. "
+                    "Reduce SHORT_HORIZON or use a different development target."
+                )
 
-        if CONTEXT_LENGTH > len(train_series):
-            raise ValueError(
-                f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds training length {{len(train_series)}} "
-                f"for series {{SERIES_INDEX}}."
-            )
+            if CONTEXT_LENGTH > len(train_series):
+                raise ValueError(
+                    f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds training length {{len(train_series)}} "
+                    f"for series {{SERIES_INDEX}}."
+                )
 
         short_bank = _build_window_bank_from_split(
             "train",
@@ -391,26 +418,49 @@ def short_term_cell() -> str:
             context_deltas=short_bank["context_deltas"],
         )
 
-        short_query = train_series[-CONTEXT_LENGTH:]
-        short_pred = short_model.forecast(
-            short_query,
-            strategy="direct",
-            total_horizon=short_horizon,
-            query_masks=np.isfinite(short_query),
-            query_deltas=_build_deltas_from_values(short_query),
-        ).reshape(-1)
+        short_errors = []
+        short_skipped = []
+        plotted = False
+        for eval_series_index in _evaluation_series_indices():
+            eval_train = _series_from_entry(_get_train_entry(eval_series_index))
+            eval_val_extra = _validation_minus_train(eval_series_index)
+            if CONTEXT_LENGTH > len(eval_train):
+                short_skipped.append((eval_series_index, "context longer than train prefix"))
+                continue
+            if short_horizon > len(eval_val_extra):
+                short_skipped.append((eval_series_index, "short horizon longer than validation\\\\train"))
+                continue
 
-        short_true = val_extra[:short_horizon]
-        short_mask = np.isfinite(short_true)
-        short_rel_l2 = relative_l2_error(short_true, short_pred, mask=short_mask)
-        print("Short-term relative L2:", short_rel_l2)
+            short_query = eval_train[-CONTEXT_LENGTH:]
+            short_pred = short_model.forecast(
+                short_query,
+                strategy="direct",
+                total_horizon=short_horizon,
+                query_masks=np.isfinite(short_query),
+                query_deltas=_build_deltas_from_values(short_query),
+            ).reshape(-1)
 
-        _plot_forecast(
-            short_true,
-            short_pred,
-            title=f"{DATASET_NAME} short-term forecast: train -> validation\\\\train",
-            mask=short_mask,
-        )
+            short_true = eval_val_extra[:short_horizon]
+            short_mask = np.isfinite(short_true)
+            short_rel_l2 = relative_l2_error(short_true, short_pred, mask=short_mask)
+            short_errors.append(short_rel_l2)
+
+            should_plot = (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
+                EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not plotted
+            )
+            if should_plot:
+                _plot_forecast(
+                    short_true,
+                    short_pred,
+                    title=f"{DATASET_NAME} short-term forecast: train -> validation\\\\train (series {eval_series_index})",
+                    mask=short_mask,
+                )
+                plotted = True
+
+        if EVALUATE_ALL_SERIES:
+            _print_error_summary("Short-term", short_errors, short_skipped)
+        else:
+            print("Short-term relative L2:", short_errors[0])
         """
     ).strip()
 
@@ -421,7 +471,7 @@ def long_term_cell() -> str:
         long_horizon = dataset.prediction_length if LONG_HORIZON is None else int(LONG_HORIZON)
         if long_horizon <= 0:
             raise ValueError("LONG_HORIZON must be positive.")
-        if CONTEXT_LENGTH > len(val_series):
+        if not EVALUATE_ALL_SERIES and CONTEXT_LENGTH > len(val_series):
             raise ValueError(
                 f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds validation length {{len(val_series)}} "
                 f"for series {{SERIES_INDEX}}."
@@ -448,64 +498,85 @@ def long_term_cell() -> str:
             context_deltas=validation_bank["context_deltas"],
         )
 
-        test_context_entry, test_label_entry = _get_test_pair(SERIES_INDEX, TEST_WINDOW_INDEX)
-        test_context = _series_from_entry(test_context_entry)
-        test_label = _series_from_entry(test_label_entry)
-        if CONTEXT_LENGTH > len(test_context):
-            raise ValueError(
-                f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds the selected test context length {{len(test_context)}}."
-            )
-        if long_horizon > len(test_label):
-            raise ValueError(
-                f"LONG_HORIZON={{long_horizon}} exceeds the selected test label length {{len(test_label)}}. "
-                "For direct test-window prediction, LONG_HORIZON should be at most prediction_length."
-            )
+        direct_errors = []
+        direct_skipped = []
+        rolling_means = []
+        rolling_skipped = []
+        plotted = False
 
-        long_query = test_context[-CONTEXT_LENGTH:]
-        long_pred = long_model.forecast(
-            long_query,
-            strategy="direct",
-            total_horizon=long_horizon,
-            query_masks=np.isfinite(long_query),
-            query_deltas=_build_deltas_from_values(long_query),
-        ).reshape(-1)
-
-        long_true = test_label[:long_horizon]
-        long_mask = np.isfinite(long_true)
-        long_rel_l2 = relative_l2_error(long_true, long_pred, mask=long_mask)
-        print("Selected test window index:", TEST_WINDOW_INDEX)
-        print("Long-term relative L2     :", long_rel_l2)
-
-        _plot_forecast(
-            long_true,
-            long_pred,
-            title=f"{DATASET_NAME} long-term direct forecast: validation -> test window {{TEST_WINDOW_INDEX}}",
-            mask=long_mask,
-        )
-
-        all_pairs = _get_all_test_pairs_for_series(SERIES_INDEX, limit=ROLLING_TEST_WINDOW_LIMIT)
-        rolling_errors = []
-        for pair_index, (ctx_entry, lbl_entry) in enumerate(all_pairs):
-            ctx = _series_from_entry(ctx_entry)
-            lbl = _series_from_entry(lbl_entry)
-            if CONTEXT_LENGTH > len(ctx) or long_horizon > len(lbl):
+        for eval_series_index in _evaluation_series_indices():
+            test_context_entry, test_label_entry = _get_test_pair(eval_series_index, TEST_WINDOW_INDEX)
+            test_context = _series_from_entry(test_context_entry)
+            test_label = _series_from_entry(test_label_entry)
+            if CONTEXT_LENGTH > len(test_context):
+                direct_skipped.append((eval_series_index, "context longer than selected test context"))
                 continue
-            pred = long_model.forecast(
-                ctx[-CONTEXT_LENGTH:],
+            if long_horizon > len(test_label):
+                direct_skipped.append((eval_series_index, "long horizon longer than selected test label"))
+                continue
+
+            long_query = test_context[-CONTEXT_LENGTH:]
+            long_pred = long_model.forecast(
+                long_query,
                 strategy="direct",
                 total_horizon=long_horizon,
-                query_masks=np.isfinite(ctx[-CONTEXT_LENGTH:]),
-                query_deltas=_build_deltas_from_values(ctx[-CONTEXT_LENGTH:]),
+                query_masks=np.isfinite(long_query),
+                query_deltas=_build_deltas_from_values(long_query),
             ).reshape(-1)
-            truth = lbl[:long_horizon]
-            rolling_errors.append(relative_l2_error(truth, pred, mask=np.isfinite(truth)))
 
-        if rolling_errors:
-            print("Rolling test windows evaluated:", len(rolling_errors))
-            print("Rolling mean relative L2      :", float(np.mean(rolling_errors)))
-            print("Rolling median relative L2    :", float(np.median(rolling_errors)))
+            long_true = test_label[:long_horizon]
+            long_mask = np.isfinite(long_true)
+            long_rel_l2 = relative_l2_error(long_true, long_pred, mask=long_mask)
+            direct_errors.append(long_rel_l2)
+
+            should_plot = (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
+                EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not plotted
+            )
+            if should_plot:
+                _plot_forecast(
+                    long_true,
+                    long_pred,
+                    title=f"{DATASET_NAME} long-term direct forecast: validation -> test window {TEST_WINDOW_INDEX} (series {eval_series_index})",
+                    mask=long_mask,
+                )
+                plotted = True
+
+            all_pairs = _get_all_test_pairs_for_series(eval_series_index, limit=ROLLING_TEST_WINDOW_LIMIT)
+            per_series_rolling = []
+            for pair_index, (ctx_entry, lbl_entry) in enumerate(all_pairs):
+                ctx = _series_from_entry(ctx_entry)
+                lbl = _series_from_entry(lbl_entry)
+                if CONTEXT_LENGTH > len(ctx) or long_horizon > len(lbl):
+                    continue
+                pred = long_model.forecast(
+                    ctx[-CONTEXT_LENGTH:],
+                    strategy="direct",
+                    total_horizon=long_horizon,
+                    query_masks=np.isfinite(ctx[-CONTEXT_LENGTH:]),
+                    query_deltas=_build_deltas_from_values(ctx[-CONTEXT_LENGTH:]),
+                ).reshape(-1)
+                truth = lbl[:long_horizon]
+                per_series_rolling.append(relative_l2_error(truth, pred, mask=np.isfinite(truth)))
+
+            if per_series_rolling:
+                rolling_means.append(float(np.mean(per_series_rolling)))
+            else:
+                rolling_skipped.append((eval_series_index, "no valid rolling test windows"))
+
+        print("Selected test window index:", TEST_WINDOW_INDEX)
+        if EVALUATE_ALL_SERIES:
+            _print_error_summary("Long-term direct", direct_errors, direct_skipped)
+            if rolling_means:
+                _print_error_summary("Long-term rolling-mean", rolling_means, rolling_skipped)
+            else:
+                print("No rolling test windows could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
         else:
-            print("No rolling test windows could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
+            print("Long-term relative L2     :", direct_errors[0])
+            if rolling_means:
+                print("Rolling test windows evaluated:", len(_get_all_test_pairs_for_series(SERIES_INDEX, limit=ROLLING_TEST_WINDOW_LIMIT)))
+                print("Rolling mean relative L2      :", rolling_means[0])
+            else:
+                print("No rolling test windows could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
         """
     ).strip()
 
@@ -521,39 +592,59 @@ def recursive_cell() -> str:
                 f"RECURSIVE_CHUNK_LENGTH={{recursive_chunk_length}} exceeds LONG_HORIZON={{long_horizon}}."
             )
 
-        test_pairs = _get_all_test_pairs_for_series(SERIES_INDEX)
-        recursive_truth_blocks = [_series_from_entry(label_entry) for _, label_entry in test_pairs]
-        recursive_truth = np.concatenate(recursive_truth_blocks)
-        recursive_mask = np.isfinite(recursive_truth)
+        recursive_errors = []
+        recursive_skipped = []
+        plotted = False
 
-        recursive_total_horizon = len(recursive_truth) if RECURSIVE_TOTAL_HORIZON is None else int(RECURSIVE_TOTAL_HORIZON)
-        if recursive_total_horizon <= 0:
-            raise ValueError("RECURSIVE_TOTAL_HORIZON must be positive.")
-        recursive_total_horizon = min(recursive_total_horizon, len(recursive_truth))
+        for eval_series_index in _evaluation_series_indices():
+            eval_val_series = _series_from_entry(_get_validation_entry(eval_series_index))
+            if CONTEXT_LENGTH > len(eval_val_series):
+                recursive_skipped.append((eval_series_index, "context longer than validation prefix"))
+                continue
 
-        recursive_query = val_series[-CONTEXT_LENGTH:]
-        recursive_pred = long_model.forecast(
-            recursive_query,
-            strategy="chunked",
-            total_horizon=recursive_total_horizon,
-            chunk_length=recursive_chunk_length,
-            query_masks=np.isfinite(recursive_query),
-            query_deltas=_build_deltas_from_values(recursive_query),
-            future_deltas=np.full((1, recursive_total_horizon), DELTA_STEP, dtype=float),
-        ).reshape(-1)
+            test_pairs = _get_all_test_pairs_for_series(eval_series_index)
+            recursive_truth_blocks = [_series_from_entry(label_entry) for _, label_entry in test_pairs]
+            recursive_truth = np.concatenate(recursive_truth_blocks)
+            recursive_mask = np.isfinite(recursive_truth)
 
-        recursive_true = recursive_truth[:recursive_total_horizon]
-        recursive_true_mask = recursive_mask[:recursive_total_horizon]
-        recursive_rel_l2 = relative_l2_error(recursive_true, recursive_pred, mask=recursive_true_mask)
-        print("Recursive total horizon:", recursive_total_horizon)
-        print("Recursive relative L2  :", recursive_rel_l2)
+            recursive_total_horizon = len(recursive_truth) if RECURSIVE_TOTAL_HORIZON is None else int(RECURSIVE_TOTAL_HORIZON)
+            if recursive_total_horizon <= 0:
+                raise ValueError("RECURSIVE_TOTAL_HORIZON must be positive.")
+            recursive_total_horizon = min(recursive_total_horizon, len(recursive_truth))
 
-        _plot_forecast(
-            recursive_true,
-            recursive_pred,
-            title=f"{DATASET_NAME} recursive forecast from validation endpoint",
-            mask=recursive_true_mask,
-        )
+            recursive_query = eval_val_series[-CONTEXT_LENGTH:]
+            recursive_pred = long_model.forecast(
+                recursive_query,
+                strategy="chunked",
+                total_horizon=recursive_total_horizon,
+                chunk_length=recursive_chunk_length,
+                query_masks=np.isfinite(recursive_query),
+                query_deltas=_build_deltas_from_values(recursive_query),
+                future_deltas=np.full((1, recursive_total_horizon), DELTA_STEP, dtype=float),
+            ).reshape(-1)
+
+            recursive_true = recursive_truth[:recursive_total_horizon]
+            recursive_true_mask = recursive_mask[:recursive_total_horizon]
+            recursive_rel_l2 = relative_l2_error(recursive_true, recursive_pred, mask=recursive_true_mask)
+            recursive_errors.append(recursive_rel_l2)
+
+            should_plot = (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
+                EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not plotted
+            )
+            if should_plot:
+                _plot_forecast(
+                    recursive_true,
+                    recursive_pred,
+                    title=f"{DATASET_NAME} recursive forecast from validation endpoint (series {eval_series_index})",
+                    mask=recursive_true_mask,
+                )
+                plotted = True
+
+        print("Recursive chunk length:", recursive_chunk_length)
+        if EVALUATE_ALL_SERIES:
+            _print_error_summary("Recursive", recursive_errors, recursive_skipped)
+        else:
+            print("Recursive relative L2  :", recursive_errors[0])
         """
     ).strip()
 

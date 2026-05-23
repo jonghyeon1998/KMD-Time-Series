@@ -90,9 +90,7 @@ def parameter_cell(dataset_name: str) -> str:
         DEGREE = 2
         GAMMA = None
         COEF0 = 1.0
-        MASK_MODE = "multiply"       # one of: "none", "multiply", "add"
-        MASK_SIMILARITY = "jaccard"  # one of: "jaccard", "overlap_fraction", "dot"
-        MASK_WEIGHT = 1.0
+        MASK_DECAY_GAMMA = 1.0       # 1.0 = uniform masked kernel; smaller values emphasize recent entries
         REGULARIZATION = 1e-2
 
         # Delta handling for the interleaved representation.
@@ -209,9 +207,7 @@ def helper_cell() -> str:
                 degree=DEGREE,
                 gamma=GAMMA,
                 coef0=COEF0,
-                mask_mode=MASK_MODE,
-                mask_similarity=MASK_SIMILARITY,
-                mask_weight=MASK_WEIGHT,
+                mask_decay_gamma=MASK_DECAY_GAMMA,
             )
 
 

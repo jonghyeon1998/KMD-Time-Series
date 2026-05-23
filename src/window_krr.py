@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from typing import Literal, Sequence
 
 import numpy as np
@@ -17,8 +17,6 @@ KernelFamily = Literal[
     "linear",
 ]
 RepresentationMode = Literal["plain", "interleaved", "masked"]
-MaskKernelMode = Literal["none", "multiply", "add"]
-MaskSimilarity = Literal["jaccard", "overlap_fraction", "dot"]
 
 
 @dataclass(frozen=True)
@@ -69,9 +67,7 @@ class KernelConfig:
     degree: int = 2
     gamma: float | None = None
     coef0: float = 1.0
-    mask_mode: MaskKernelMode = "multiply"
-    mask_similarity: MaskSimilarity = "jaccard"
-    mask_weight: float = 1.0
+    mask_decay_gamma: float = 1.0
 
 
 def _canonical_kernel_family(name: str) -> KernelFamily:
@@ -135,12 +131,11 @@ def _validate_kernel_config(config: KernelConfig) -> KernelConfig:
         )
     if family == "polynomial" and config.degree < 0:
         raise ValueError(f"Polynomial degree must be non-negative. Received {config.degree}.")
-    if config.mask_mode not in {"none", "multiply", "add"}:
-        raise ValueError(f"Unsupported mask_mode '{config.mask_mode}'.")
-    if config.mask_similarity not in {"jaccard", "overlap_fraction", "dot"}:
-        raise ValueError(f"Unsupported mask_similarity '{config.mask_similarity}'.")
-    if config.mask_weight < 0:
-        raise ValueError(f"mask_weight must be non-negative. Received {config.mask_weight}.")
+    if not (0.0 < config.mask_decay_gamma <= 1.0):
+        raise ValueError(
+            "mask_decay_gamma must lie in the interval (0, 1]. "
+            f"Received {config.mask_decay_gamma}."
+        )
     return KernelConfig(
         family=family,
         amplitude=float(config.amplitude),
@@ -148,9 +143,7 @@ def _validate_kernel_config(config: KernelConfig) -> KernelConfig:
         degree=int(config.degree),
         gamma=None if config.gamma is None else float(config.gamma),
         coef0=float(config.coef0),
-        mask_mode=config.mask_mode,
-        mask_similarity=config.mask_similarity,
-        mask_weight=float(config.mask_weight),
+        mask_decay_gamma=float(config.mask_decay_gamma),
     )
 
 
@@ -490,38 +483,14 @@ def build_feature_kernel_matrix(
     raise AssertionError(f"Unhandled kernel family '{family}'.")
 
 
-def _mask_similarity_score(
-    mask_a: np.ndarray,
-    mask_b: np.ndarray,
-    *,
-    kind: MaskSimilarity,
-) -> float:
-    overlap = np.logical_and(mask_a, mask_b).sum()
-    if kind == "jaccard":
-        union = np.logical_or(mask_a, mask_b).sum()
-        return float(overlap / union) if union > 0 else 1.0
-    if kind == "overlap_fraction":
-        return float(overlap / mask_a.size)
-    if kind == "dot":
-        denom = np.sqrt(mask_a.sum() * mask_b.sum())
-        return float(overlap / denom) if denom > 0 else 0.0
-    raise ValueError(f"Unsupported mask similarity '{kind}'.")
-
-
-def _combine_base_and_mask(
-    base_value: float,
-    mask_value: float,
-    *,
-    mode: MaskKernelMode,
-    weight: float,
-) -> float:
-    if mode == "none":
-        return base_value
-    if mode == "multiply":
-        return base_value * (mask_value ** weight)
-    if mode == "add":
-        return base_value + weight * mask_value
-    raise ValueError(f"Unsupported mask combination mode '{mode}'.")
+def _masked_decay_weights(length: int, *, decay_gamma: float) -> np.ndarray:
+    length = _validate_positive_int(length, "length")
+    if decay_gamma == 1.0:
+        return np.ones(length, dtype=float)
+    # Windows are stored oldest -> newest, so the most recent coordinate gets weight 1.0
+    # and older coordinates are geometrically downweighted by powers of mask_decay_gamma.
+    powers = np.arange(length - 1, -1, -1, dtype=float)
+    return decay_gamma ** powers
 
 
 def _masked_pair_kernel(
@@ -537,12 +506,14 @@ def _masked_pair_kernel(
     if overlap_count == 0:
         return 0.0
 
+    coord_weights = _masked_decay_weights(x.shape[0], decay_gamma=config.mask_decay_gamma)
+    active_weights = coord_weights[overlap]
     x_obs = x[overlap]
     y_obs = y[overlap]
     diff = x_obs - y_obs
-    sqdist = float(np.dot(diff, diff) / overlap_count)
-    l1dist = float(np.abs(diff).sum() / overlap_count)
-    dot = float(np.dot(x_obs, y_obs) / overlap_count)
+    sqdist = float(np.dot(active_weights, diff * diff))
+    l1dist = float(np.dot(active_weights, np.abs(diff)))
+    dot = float(np.dot(active_weights, x_obs * y_obs))
     gamma = _resolve_gamma(config, overlap_count)
 
     if config.family == "linear":
@@ -562,13 +533,7 @@ def _masked_pair_kernel(
     else:
         raise AssertionError(f"Unhandled kernel family '{config.family}'.")
 
-    mask_value = _mask_similarity_score(mask_x, mask_y, kind=config.mask_similarity)
-    return _combine_base_and_mask(
-        base,
-        mask_value,
-        mode=config.mask_mode,
-        weight=config.mask_weight,
-    )
+    return base
 
 
 def build_masked_kernel_matrix(
@@ -676,11 +641,7 @@ def build_window_kernel_matrix(
                 context_deltas,
                 masks=X_mask,
             )
-            return build_masked_kernel_matrix(
-                X_feat,
-                X_feat_mask,
-                config=replace(config, mask_mode="none"),
-            )
+            return build_masked_kernel_matrix(X_feat, X_feat_mask, config=config)
         if other_deltas is None:
             raise ValueError("other_deltas must be provided when using interleaved cross-kernels.")
         Y_mask = np.isfinite(Y) if other_masks is None else np.asarray(other_masks, dtype=bool)
@@ -706,7 +667,7 @@ def build_window_kernel_matrix(
             X_feat_mask,
             Y_feat,
             Y_feat_mask,
-            config=replace(config, mask_mode="none"),
+            config=config,
         )
 
     if rep == "masked":

@@ -112,6 +112,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
         TEST_WINDOW_INDEX = 0
         ROLLING_TEST_WINDOW_LIMIT = None     # set to an integer to cap rolling evaluation windows
         PLOT_STITCHED_TEST_TAIL = True       # plot the concatenated direct test-tail forecast
+        ONE_SHOT_TEST_TAIL = True            # fit a direct model for the whole concatenated test tail when feasible
         RECURSIVE_TOTAL_HORIZON = None       # defaults to dataset.windows * dataset.prediction_length
         RECURSIVE_CHUNK_LENGTH = {recursive_chunk_length}
 
@@ -530,14 +531,47 @@ def long_term_cell() -> str:
             context_deltas=validation_bank["context_deltas"],
         )
 
+        one_shot_window_count = dataset.windows if ROLLING_TEST_WINDOW_LIMIT is None else min(int(ROLLING_TEST_WINDOW_LIMIT), dataset.windows)
+        one_shot_horizon = one_shot_window_count * dataset.prediction_length
+        one_shot_model = None
+        one_shot_bank_error = None
+        if ONE_SHOT_TEST_TAIL:
+            try:
+                one_shot_bank = _build_window_bank_from_split(
+                    "validation",
+                    context_length=CONTEXT_LENGTH,
+                    horizon_length=one_shot_horizon,
+                    stride=VALIDATION_STRIDE,
+                    max_series=MAX_SERIES,
+                    max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                )
+                print("One-shot bank windows:", one_shot_bank["n_windows"])
+                print("One-shot bank series :", one_shot_bank["used_series"])
+                print("One-shot skipped     :", len(one_shot_bank["skipped"]))
+
+                one_shot_model = _make_forecaster()
+                one_shot_model.fit(
+                    one_shot_bank["contexts"],
+                    one_shot_bank["targets"],
+                    context_masks=one_shot_bank["context_masks"],
+                    target_masks=one_shot_bank["target_masks"],
+                    context_deltas=one_shot_bank["context_deltas"],
+                )
+            except ValueError as exc:
+                one_shot_bank_error = str(exc)
+                print("One-shot test-tail model unavailable:", one_shot_bank_error)
+
         direct_errors = []
         direct_skipped = []
         stitched_errors = []
         stitched_skipped = []
+        one_shot_errors = []
+        one_shot_skipped = []
         rolling_means = []
         rolling_skipped = []
         block_plotted = False
         stitched_plotted = False
+        one_shot_plotted = False
 
         for eval_series_index in _evaluation_series_indices():
             test_context_entry, test_label_entry = _get_test_pair(eval_series_index, TEST_WINDOW_INDEX)
@@ -630,6 +664,41 @@ def long_term_cell() -> str:
             else:
                 stitched_skipped.append((eval_series_index, "no valid stitched test-tail blocks"))
 
+            if one_shot_model is not None:
+                one_shot_val_series = _series_from_entry(_get_validation_entry(eval_series_index))
+                one_shot_true = _get_test_tail(eval_series_index, limit=ROLLING_TEST_WINDOW_LIMIT)
+                one_shot_mask = np.isfinite(one_shot_true)
+                if CONTEXT_LENGTH > len(one_shot_val_series):
+                    one_shot_skipped.append((eval_series_index, "context longer than validation prefix for one-shot forecast"))
+                elif len(one_shot_true) < one_shot_horizon:
+                    one_shot_skipped.append((eval_series_index, "one-shot tail shorter than expected horizon"))
+                elif not one_shot_mask.any():
+                    one_shot_skipped.append((eval_series_index, "one-shot test tail is entirely missing"))
+                else:
+                    one_shot_query = one_shot_val_series[-CONTEXT_LENGTH:]
+                    one_shot_pred = one_shot_model.forecast(
+                        one_shot_query,
+                        strategy="direct",
+                        total_horizon=one_shot_horizon,
+                        query_masks=np.isfinite(one_shot_query),
+                        query_deltas=_build_deltas_from_values(one_shot_query),
+                    ).reshape(-1)
+                    one_shot_errors.append(relative_l2_error(one_shot_true[:one_shot_horizon], one_shot_pred, mask=one_shot_mask[:one_shot_horizon]))
+
+                    should_plot_one_shot = ONE_SHOT_TEST_TAIL and (
+                        (not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX) or (
+                            EVALUATE_ALL_SERIES and PLOT_FIRST_SERIES_WHEN_AGGREGATING and not one_shot_plotted
+                        )
+                    )
+                    if should_plot_one_shot:
+                        _plot_forecast(
+                            one_shot_true[:one_shot_horizon],
+                            one_shot_pred,
+                            title=f"{DATASET_NAME} one-shot direct forecast over concatenated test tail (series {eval_series_index})",
+                            mask=one_shot_mask[:one_shot_horizon],
+                        )
+                        one_shot_plotted = True
+
         print("Selected test window index:", TEST_WINDOW_INDEX)
         if EVALUATE_ALL_SERIES:
             _print_error_summary("Long-term direct", direct_errors, direct_skipped)
@@ -637,6 +706,13 @@ def long_term_cell() -> str:
                 _print_error_summary("Long-term stitched-tail direct", stitched_errors, stitched_skipped)
             else:
                 print("No stitched direct test-tail forecasts could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
+            if ONE_SHOT_TEST_TAIL:
+                if one_shot_model is None:
+                    print("No one-shot direct test-tail model was built:", one_shot_bank_error)
+                elif one_shot_errors:
+                    _print_error_summary("Long-term one-shot direct", one_shot_errors, one_shot_skipped)
+                else:
+                    print("No one-shot direct test-tail forecasts could be evaluated with the current CONTEXT_LENGTH/one-shot horizon.")
             if rolling_means:
                 _print_error_summary("Long-term rolling-mean", rolling_means, rolling_skipped)
             else:
@@ -652,6 +728,13 @@ def long_term_cell() -> str:
                 print("Stitched direct tail L2   :", stitched_errors[0])
             else:
                 print("No stitched direct test-tail forecast could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
+            if ONE_SHOT_TEST_TAIL:
+                if one_shot_model is None:
+                    print("One-shot direct tail unavailable:", one_shot_bank_error)
+                elif one_shot_errors:
+                    print("One-shot direct tail L2   :", one_shot_errors[0])
+                else:
+                    print("No one-shot direct test-tail forecast could be evaluated with the current CONTEXT_LENGTH/one-shot horizon.")
             if rolling_means:
                 print("Rolling test windows evaluated:", len(_get_all_test_pairs_for_series(SERIES_INDEX, limit=ROLLING_TEST_WINDOW_LIMIT)))
                 print("Rolling mean relative L2      :", rolling_means[0])

@@ -9,6 +9,7 @@ import nbformat as nbf
 
 ROOT = Path("/Users/jonghyeonlee/KMD_TS")
 AUDIT_JSON = ROOT / "experiments" / "gift_eval_univariate_split_audit.json"
+PRESETS_JSON = ROOT / "experiments" / "window_krr_default_presets.json"
 OUTPUT_DIR = ROOT / "experiments" / "univariate_window_krr_playgrounds"
 README_PATH = OUTPUT_DIR / "README.md"
 
@@ -63,7 +64,15 @@ def import_cell() -> str:
     ).strip()
 
 
-def parameter_cell(dataset_name: str) -> str:
+def parameter_cell(dataset_name: str, preset: dict) -> str:
+    representation = preset["representation"]
+    context_length = int(preset["context_length"])
+    length_scale = float(preset["length_scale"])
+    regularization = float(preset["regularization"])
+    mask_decay_gamma = float(preset["mask_decay_gamma"])
+    recursive_chunk_length = int(preset["recursive_chunk_length"])
+    max_series = int(preset.get("max_series", 200))
+    max_windows_per_series = int(preset.get("max_windows_per_series", 20))
     return dedent(
         f"""
         DATASET_NAME = "{dataset_name}"
@@ -74,24 +83,24 @@ def parameter_cell(dataset_name: str) -> str:
         SERIES_INDEX = 0
 
         # Keep these conservative by default so large datasets stay interactive.
-        MAX_SERIES = 200
-        MAX_WINDOWS_PER_SERIES = 20
+        MAX_SERIES = {max_series}
+        MAX_WINDOWS_PER_SERIES = {max_windows_per_series}
 
-        CONTEXT_LENGTH = 100
+        CONTEXT_LENGTH = {context_length}
         SHORT_HORIZON = None         # defaults to dataset.prediction_length
         LONG_HORIZON = None          # defaults to dataset.prediction_length
         TRAIN_STRIDE = None          # defaults to SHORT_HORIZON
         VALIDATION_STRIDE = None     # defaults to LONG_HORIZON
 
-        REPRESENTATION = "masked"    # one of: "masked", "interleaved", "plain"
+        REPRESENTATION = "{representation}"    # one of: "masked", "interleaved", "plain"
         KERNEL_FAMILY = "rbf"        # one of: rbf, matern25, polynomial, laplace, inverse_quadratic, linear
         AMPLITUDE = 1.0
-        LENGTH_SCALE = 5.0
+        LENGTH_SCALE = {length_scale}
         DEGREE = 2
         GAMMA = None
         COEF0 = 1.0
-        MASK_DECAY_GAMMA = 1.0       # 1.0 = uniform masked kernel; smaller values emphasize recent entries
-        REGULARIZATION = 1e-2
+        MASK_DECAY_GAMMA = {mask_decay_gamma}       # 1.0 = uniform masked kernel; smaller values emphasize recent entries
+        REGULARIZATION = {regularization}
 
         # Delta handling for the interleaved representation.
         # "regular" means every step has the same delta.
@@ -104,7 +113,7 @@ def parameter_cell(dataset_name: str) -> str:
         ROLLING_TEST_WINDOW_LIMIT = None     # set to an integer to cap rolling evaluation windows
         PLOT_STITCHED_TEST_TAIL = True       # plot the concatenated direct test-tail forecast
         RECURSIVE_TOTAL_HORIZON = None       # defaults to dataset.windows * dataset.prediction_length
-        RECURSIVE_CHUNK_LENGTH = None        # defaults to LONG_HORIZON
+        RECURSIVE_CHUNK_LENGTH = {recursive_chunk_length}
 
         # Evaluation scope
         EVALUATE_ALL_SERIES = False          # if False, evaluate SERIES_INDEX only
@@ -699,7 +708,7 @@ def recursive_cell() -> str:
     ).strip()
 
 
-def make_notebook(dataset_name: str) -> nbf.NotebookNode:
+def make_notebook(dataset_name: str, preset: dict) -> nbf.NotebookNode:
     nb = nbf.v4.new_notebook()
     nb.cells = [
         nbf.v4.new_markdown_cell(
@@ -721,7 +730,7 @@ def make_notebook(dataset_name: str) -> nbf.NotebookNode:
         ),
         nbf.v4.new_code_cell(setup_cell()),
         nbf.v4.new_code_cell(import_cell()),
-        nbf.v4.new_code_cell(parameter_cell(dataset_name)),
+        nbf.v4.new_code_cell(parameter_cell(dataset_name, preset)),
         nbf.v4.new_markdown_cell(
             dedent(
                 """
@@ -785,12 +794,13 @@ def make_readme(dataset_names: list[str]) -> str:
 
 def main() -> None:
     rows = json.loads(AUDIT_JSON.read_text())
+    presets = json.loads(PRESETS_JSON.read_text())
     dataset_names = [row["dataset_name"] for row in rows]
 
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     for dataset_name in dataset_names:
-        nb = make_notebook(dataset_name)
+        nb = make_notebook(dataset_name, presets[dataset_name])
         path = OUTPUT_DIR / notebook_filename(dataset_name)
         nbf.write(nb, path)
 

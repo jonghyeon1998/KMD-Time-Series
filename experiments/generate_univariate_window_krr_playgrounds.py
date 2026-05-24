@@ -150,7 +150,7 @@ def helper_cell() -> str:
             for i, item in enumerate(data_it):
                 if i == index:
                     return item
-            raise IndexError(f"Index {{index}} is out of range.")
+            raise IndexError(f"Index {index} is out of range.")
 
 
         def _series_from_entry(entry) -> np.ndarray:
@@ -168,7 +168,7 @@ def helper_cell() -> str:
         def _get_test_pair(series_index: int, window_index: int):
             if window_index < 0 or window_index >= dataset.windows:
                 raise IndexError(
-                    f"window_index={{window_index}} is out of range for dataset.windows={{dataset.windows}}."
+                    f"window_index={window_index} is out of range for dataset.windows={dataset.windows}."
                 )
             flat_index = series_index * dataset.windows + window_index
             test_context = _nth_item(dataset.test_data.input, flat_index)
@@ -227,7 +227,7 @@ def helper_cell() -> str:
             if DELTA_MODE == "since_last_observed":
                 return build_gap_deltas_from_mask(observed_mask, step=DELTA_STEP)
             raise ValueError(
-                f"Unsupported DELTA_MODE={{DELTA_MODE}}. "
+                f"Unsupported DELTA_MODE={DELTA_MODE}. "
                 "Supported modes are 'regular' and 'since_last_observed'."
             )
 
@@ -294,7 +294,7 @@ def helper_cell() -> str:
 
             if not contexts:
                 raise ValueError(
-                    f"No valid windows could be built from split '{{split_name}}'. "
+                    f"No valid windows could be built from split '{split_name}'. "
                     "Try reducing CONTEXT_LENGTH, LONG_HORIZON/SHORT_HORIZON, or MAX_WINDOWS_PER_SERIES."
                 )
 
@@ -383,7 +383,7 @@ def preview_cell() -> str:
         fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
         axes[0].plot(np.arange(1, len(val_series) + 1), val_series, linewidth=1.5)
         axes[0].axvline(len(train_series), color="tab:red", linestyle="--", label="train boundary")
-        axes[0].set_title(f"{DATASET_NAME} series {{SERIES_INDEX}}")
+        axes[0].set_title(f"{DATASET_NAME} series {SERIES_INDEX}")
         axes[0].set_ylabel("value")
         axes[0].legend()
         axes[0].grid(alpha=0.25)
@@ -411,14 +411,14 @@ def short_term_cell() -> str:
         if not EVALUATE_ALL_SERIES:
             if short_horizon > len(val_extra):
                 raise ValueError(
-                    f"SHORT_HORIZON={{short_horizon}} exceeds len(validation\\\\train)={{len(val_extra)}}. "
+                    f"SHORT_HORIZON={short_horizon} exceeds len(validation\\\\train)={len(val_extra)}. "
                     "Reduce SHORT_HORIZON or use a different development target."
                 )
 
             if CONTEXT_LENGTH > len(train_series):
                 raise ValueError(
-                    f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds training length {{len(train_series)}} "
-                    f"for series {{SERIES_INDEX}}."
+                    f"CONTEXT_LENGTH={CONTEXT_LENGTH} exceeds training length {len(train_series)} "
+                    f"for series {SERIES_INDEX}."
                 )
 
         short_bank = _build_window_bank_from_split(
@@ -489,7 +489,7 @@ def short_term_cell() -> str:
         else:
             if not short_errors:
                 raise ValueError(
-                    f"Series {{SERIES_INDEX}} has no observed entries in validation\\\\train for the chosen SHORT_HORIZON={{short_horizon}}. "
+                    f"Series {SERIES_INDEX} has no observed entries in validation\\\\train for the chosen SHORT_HORIZON={short_horizon}. "
                     "Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
                 )
             print("Short-term relative L2:", short_errors[0])
@@ -505,8 +505,8 @@ def long_term_cell() -> str:
             raise ValueError("LONG_HORIZON must be positive.")
         if not EVALUATE_ALL_SERIES and CONTEXT_LENGTH > len(val_series):
             raise ValueError(
-                f"CONTEXT_LENGTH={{CONTEXT_LENGTH}} exceeds validation length {{len(val_series)}} "
-                f"for series {{SERIES_INDEX}}."
+                f"CONTEXT_LENGTH={CONTEXT_LENGTH} exceeds validation length {len(val_series)} "
+                f"for series {SERIES_INDEX}."
             )
 
         validation_bank = _build_window_bank_from_split(
@@ -644,8 +644,8 @@ def long_term_cell() -> str:
         else:
             if not direct_errors:
                 raise ValueError(
-                    f"Series {{SERIES_INDEX}} has no observed entries in the selected test label for TEST_WINDOW_INDEX={{TEST_WINDOW_INDEX}} "
-                    f"and LONG_HORIZON={{long_horizon}}. Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
+                    f"Series {SERIES_INDEX} has no observed entries in the selected test label for TEST_WINDOW_INDEX={TEST_WINDOW_INDEX} "
+                    f"and LONG_HORIZON={long_horizon}. Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
                 )
             print("Long-term relative L2     :", direct_errors[0])
             if stitched_errors:
@@ -669,7 +669,7 @@ def recursive_cell() -> str:
             raise ValueError("RECURSIVE_CHUNK_LENGTH must be positive.")
         if recursive_chunk_length > long_horizon:
             raise ValueError(
-                f"RECURSIVE_CHUNK_LENGTH={{recursive_chunk_length}} exceeds LONG_HORIZON={{long_horizon}}."
+                f"RECURSIVE_CHUNK_LENGTH={recursive_chunk_length} exceeds LONG_HORIZON={long_horizon}."
             )
 
         recursive_errors = []
@@ -727,7 +727,7 @@ def recursive_cell() -> str:
         else:
             if not recursive_errors:
                 raise ValueError(
-                    f"Series {{SERIES_INDEX}} has no observed entries in the recursive test tail for RECURSIVE_TOTAL_HORIZON={{recursive_total_horizon}}. "
+                    f"Series {SERIES_INDEX} has no observed entries in the recursive test tail for RECURSIVE_TOTAL_HORIZON={recursive_total_horizon}. "
                     "Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
                 )
             print("Recursive relative L2  :", recursive_errors[0])

@@ -466,6 +466,9 @@ def short_term_cell() -> str:
 
             short_true = eval_val_extra[:short_horizon]
             short_mask = np.isfinite(short_true)
+            if not short_mask.any():
+                short_skipped.append((eval_series_index, "validation\\\\train target is entirely missing"))
+                continue
             short_rel_l2 = relative_l2_error(short_true, short_pred, mask=short_mask)
             short_errors.append(short_rel_l2)
 
@@ -484,6 +487,11 @@ def short_term_cell() -> str:
         if EVALUATE_ALL_SERIES:
             _print_error_summary("Short-term", short_errors, short_skipped)
         else:
+            if not short_errors:
+                raise ValueError(
+                    f"Series {{SERIES_INDEX}} has no observed entries in validation\\\\train for the chosen SHORT_HORIZON={{short_horizon}}. "
+                    "Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
+                )
             print("Short-term relative L2:", short_errors[0])
         """
     ).strip()
@@ -553,6 +561,9 @@ def long_term_cell() -> str:
 
             long_true = test_label[:long_horizon]
             long_mask = np.isfinite(long_true)
+            if not long_mask.any():
+                direct_skipped.append((eval_series_index, "selected test label is entirely missing"))
+                continue
             long_rel_l2 = relative_l2_error(long_true, long_pred, mask=long_mask)
             direct_errors.append(long_rel_l2)
 
@@ -585,7 +596,10 @@ def long_term_cell() -> str:
                     query_deltas=_build_deltas_from_values(ctx[-CONTEXT_LENGTH:]),
                 ).reshape(-1)
                 truth = lbl[:long_horizon]
-                per_series_rolling.append(relative_l2_error(truth, pred, mask=np.isfinite(truth)))
+                truth_mask = np.isfinite(truth)
+                if not truth_mask.any():
+                    continue
+                per_series_rolling.append(relative_l2_error(truth, pred, mask=truth_mask))
                 stitched_truth_blocks.append(truth)
                 stitched_pred_blocks.append(pred)
 
@@ -628,6 +642,11 @@ def long_term_cell() -> str:
             else:
                 print("No rolling test windows could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
         else:
+            if not direct_errors:
+                raise ValueError(
+                    f"Series {{SERIES_INDEX}} has no observed entries in the selected test label for TEST_WINDOW_INDEX={{TEST_WINDOW_INDEX}} "
+                    f"and LONG_HORIZON={{long_horizon}}. Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
+                )
             print("Long-term relative L2     :", direct_errors[0])
             if stitched_errors:
                 print("Stitched direct tail L2   :", stitched_errors[0])
@@ -684,6 +703,9 @@ def recursive_cell() -> str:
 
             recursive_true = recursive_truth[:recursive_total_horizon]
             recursive_true_mask = recursive_mask[:recursive_total_horizon]
+            if not recursive_true_mask.any():
+                recursive_skipped.append((eval_series_index, "recursive test tail is entirely missing"))
+                continue
             recursive_rel_l2 = relative_l2_error(recursive_true, recursive_pred, mask=recursive_true_mask)
             recursive_errors.append(recursive_rel_l2)
 
@@ -703,6 +725,11 @@ def recursive_cell() -> str:
         if EVALUATE_ALL_SERIES:
             _print_error_summary("Recursive", recursive_errors, recursive_skipped)
         else:
+            if not recursive_errors:
+                raise ValueError(
+                    f"Series {{SERIES_INDEX}} has no observed entries in the recursive test tail for RECURSIVE_TOTAL_HORIZON={{recursive_total_horizon}}. "
+                    "Choose a different SERIES_INDEX or use EVALUATE_ALL_SERIES=True."
+                )
             print("Recursive relative L2  :", recursive_errors[0])
         """
     ).strip()

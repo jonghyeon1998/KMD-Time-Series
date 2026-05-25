@@ -55,8 +55,11 @@ def import_cell() -> str:
         from src.window_krr import (
             KernelConfig,
             WindowKernelRidgeForecaster,
+            apply_normalization,
             build_gap_deltas_from_mask,
             build_regular_deltas,
+            compute_normalization_stats,
+            invert_normalization,
             make_windowed_forecasting_dataset,
             relative_l2_error,
         )
@@ -91,6 +94,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
         LONG_HORIZON = None          # defaults to dataset.prediction_length
         TRAIN_STRIDE = None          # defaults to SHORT_HORIZON
         VALIDATION_STRIDE = None     # defaults to LONG_HORIZON
+        NORMALIZATION = "none"      # one of: "none", "robust_series", "robust_context"
 
         REPRESENTATION = "{representation}"    # one of: "masked", "interleaved", "plain"
         KERNEL_FAMILY = "rbf"        # one of: rbf, matern25, polynomial, laplace, inverse_quadratic, linear
@@ -120,6 +124,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
         EVALUATE_ALL_SERIES = False          # if False, evaluate SERIES_INDEX only
         EVAL_SERIES_LIMIT = None             # optional cap when EVALUATE_ALL_SERIES=True
         PLOT_FIRST_SERIES_WHEN_AGGREGATING = False
+        SAME_SERIES_ONLY_BANK = False        # if True, fit each forecast using windows from the same series only
         """
     ).strip()
 
@@ -233,6 +238,50 @@ def helper_cell() -> str:
             )
 
 
+        def _normalization_mode():
+            mode = str(NORMALIZATION).lower()
+            if mode not in {"none", "robust_series", "robust_context"}:
+                raise ValueError(
+                    f"Unsupported NORMALIZATION={NORMALIZATION}. "
+                    "Supported modes are 'none', 'robust_series', and 'robust_context'."
+                )
+            return mode
+
+
+        def _query_normalization_stats(context_values: np.ndarray, *, reference_values: np.ndarray | None = None):
+            mode = _normalization_mode()
+            context_mask = np.isfinite(context_values)
+            if mode == "none":
+                return compute_normalization_stats(
+                    context_values,
+                    observed_mask=context_mask,
+                    mode="none",
+                )
+            if mode == "robust_series":
+                reference = context_values if reference_values is None else reference_values
+                reference_mask = np.isfinite(reference)
+                return compute_normalization_stats(
+                    reference,
+                    observed_mask=reference_mask,
+                    mode="robust_series",
+                )
+            return compute_normalization_stats(
+                context_values,
+                observed_mask=context_mask,
+                mode="robust_context",
+            )
+
+
+        def _normalize_query_context(context_values: np.ndarray, *, reference_values: np.ndarray | None = None):
+            stats = _query_normalization_stats(context_values, reference_values=reference_values)
+            normalized = apply_normalization(
+                context_values,
+                stats=stats,
+                observed_mask=np.isfinite(context_values),
+            )
+            return normalized, stats
+
+
         def _build_window_bank_from_split(
             split_name: str,
             *,
@@ -241,6 +290,8 @@ def helper_cell() -> str:
             stride: int | None,
             max_series: int | None,
             max_windows_per_series: int | None,
+            only_series_index: int | None = None,
+            normalization: str | None = None,
         ):
             if split_name not in {"train", "validation"}:
                 raise ValueError("split_name must be either 'train' or 'validation'.")
@@ -253,6 +304,7 @@ def helper_cell() -> str:
             stride = horizon_length if stride is None else int(stride)
             if stride <= 0:
                 raise ValueError("stride must be positive.")
+            bank_normalization = _normalization_mode() if normalization is None else str(normalization).lower()
 
             contexts = []
             targets = []
@@ -264,7 +316,9 @@ def helper_cell() -> str:
             skipped = []
 
             for series_index, entry in enumerate(entry_iter):
-                if max_series is not None and series_index >= max_series:
+                if only_series_index is not None and series_index != only_series_index:
+                    continue
+                if only_series_index is None and max_series is not None and series_index >= max_series:
                     break
                 values = _series_from_entry(entry)
                 observed_mask = np.isfinite(values)
@@ -280,6 +334,7 @@ def helper_cell() -> str:
                         max_windows=max_windows_per_series,
                         include_last=True,
                         drop_all_missing_targets=True,
+                        normalization=bank_normalization,
                     )
                 except ValueError as exc:
                     skipped.append((series_index, str(exc)))
@@ -310,6 +365,43 @@ def helper_cell() -> str:
                 "n_windows": sum(arr.shape[0] for arr in contexts),
                 "skipped": skipped,
             }
+
+
+        def _fit_forecaster_from_split(
+            split_name: str,
+            *,
+            context_length: int,
+            horizon_length: int,
+            stride: int | None,
+            max_series: int | None,
+            max_windows_per_series: int | None,
+            only_series_index: int | None = None,
+            label: str = "Bank",
+            verbose: bool = False,
+        ):
+            bank = _build_window_bank_from_split(
+                split_name,
+                context_length=context_length,
+                horizon_length=horizon_length,
+                stride=stride,
+                max_series=max_series,
+                max_windows_per_series=max_windows_per_series,
+                only_series_index=only_series_index,
+            )
+            if verbose:
+                print(f"{label} bank windows:", bank["n_windows"])
+                print(f"{label} bank series :", bank["used_series"])
+                print(f"{label} skipped     :", len(bank["skipped"]))
+
+            model = _make_forecaster()
+            model.fit(
+                bank["contexts"],
+                bank["targets"],
+                context_masks=bank["context_masks"],
+                target_masks=bank["target_masks"],
+                context_deltas=bank["context_deltas"],
+            )
+            return bank, model
 
 
         def _make_forecaster():
@@ -374,23 +466,44 @@ def preview_cell() -> str:
         train_series = _series_from_entry(train_entry)
         val_series = _series_from_entry(val_entry)
         val_extra = val_series[len(train_series):]
-        val_mask = np.isfinite(val_series).astype(int)
+        test_tail = _get_test_tail(SERIES_INDEX)
+        full_series = _get_validation_plus_test_series(SERIES_INDEX)
+        full_mask = np.isfinite(full_series).astype(int)
 
         print("Selected series index:", SERIES_INDEX)
         print("train length         :", len(train_series))
         print("validation length    :", len(val_series))
         print("validation\\\\train len :", len(val_extra))
+        print("test windows         :", dataset.windows)
+        print("test tail length     :", len(test_tail))
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
-        axes[0].plot(np.arange(1, len(val_series) + 1), val_series, linewidth=1.5)
+        x_full = np.arange(1, len(full_series) + 1)
+        axes[0].plot(x_full, full_series, linewidth=1.5)
         axes[0].axvline(len(train_series), color="tab:red", linestyle="--", label="train boundary")
+        axes[0].axvline(len(val_series), color="black", linestyle=":", label="validation boundary")
+        for window_index in range(dataset.windows):
+            start = len(val_series) + window_index * dataset.prediction_length + 1
+            end = start + dataset.prediction_length - 1
+            axes[0].axvspan(
+                start - 0.5,
+                end + 0.5,
+                color="tab:green",
+                alpha=0.08,
+                label="test window" if window_index == 0 else None,
+            )
         axes[0].set_title(f"{DATASET_NAME} series {SERIES_INDEX}")
         axes[0].set_ylabel("value")
         axes[0].legend()
         axes[0].grid(alpha=0.25)
 
-        axes[1].step(np.arange(1, len(val_mask) + 1), val_mask, where="post")
+        axes[1].step(x_full, full_mask, where="post")
         axes[1].axvline(len(train_series), color="tab:red", linestyle="--")
+        axes[1].axvline(len(val_series), color="black", linestyle=":")
+        for window_index in range(dataset.windows):
+            start = len(val_series) + window_index * dataset.prediction_length + 1
+            end = start + dataset.prediction_length - 1
+            axes[1].axvspan(start - 0.5, end + 0.5, color="tab:green", alpha=0.08)
         axes[1].set_ylabel("observed")
         axes[1].set_xlabel("time index")
         axes[1].set_ylim(-0.1, 1.1)
@@ -422,26 +535,18 @@ def short_term_cell() -> str:
                     f"for series {SERIES_INDEX}."
                 )
 
-        short_bank = _build_window_bank_from_split(
-            "train",
-            context_length=CONTEXT_LENGTH,
-            horizon_length=short_horizon,
-            stride=TRAIN_STRIDE,
-            max_series=MAX_SERIES,
-            max_windows_per_series=MAX_WINDOWS_PER_SERIES,
-        )
-        print("Short-term bank windows:", short_bank["n_windows"])
-        print("Short-term bank series :", short_bank["used_series"])
-        print("Short-term skipped     :", len(short_bank["skipped"]))
-
-        short_model = _make_forecaster()
-        short_model.fit(
-            short_bank["contexts"],
-            short_bank["targets"],
-            context_masks=short_bank["context_masks"],
-            target_masks=short_bank["target_masks"],
-            context_deltas=short_bank["context_deltas"],
-        )
+        short_model = None
+        if not SAME_SERIES_ONLY_BANK:
+            _, short_model = _fit_forecaster_from_split(
+                "train",
+                context_length=CONTEXT_LENGTH,
+                horizon_length=short_horizon,
+                stride=TRAIN_STRIDE,
+                max_series=MAX_SERIES,
+                max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                label="Short-term",
+                verbose=True,
+            )
 
         short_errors = []
         short_skipped = []
@@ -456,14 +561,37 @@ def short_term_cell() -> str:
                 short_skipped.append((eval_series_index, "short horizon longer than validation\\\\train"))
                 continue
 
-            short_query = eval_train[-CONTEXT_LENGTH:]
-            short_pred = short_model.forecast(
+            current_short_model = short_model
+            if SAME_SERIES_ONLY_BANK:
+                try:
+                    _, current_short_model = _fit_forecaster_from_split(
+                        "train",
+                        context_length=CONTEXT_LENGTH,
+                        horizon_length=short_horizon,
+                        stride=TRAIN_STRIDE,
+                        max_series=None,
+                        max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                        only_series_index=eval_series_index,
+                        label=f"Short-term series {eval_series_index}",
+                        verbose=(not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX),
+                    )
+                except ValueError as exc:
+                    short_skipped.append((eval_series_index, f"same-series short-term bank unavailable: {exc}"))
+                    continue
+
+            short_query_raw = eval_train[-CONTEXT_LENGTH:]
+            short_query, short_stats = _normalize_query_context(
+                short_query_raw,
+                reference_values=eval_train,
+            )
+            short_pred_norm = current_short_model.forecast(
                 short_query,
                 strategy="direct",
                 total_horizon=short_horizon,
-                query_masks=np.isfinite(short_query),
-                query_deltas=_build_deltas_from_values(short_query),
+                query_masks=np.isfinite(short_query_raw),
+                query_deltas=_build_deltas_from_values(short_query_raw),
             ).reshape(-1)
+            short_pred = invert_normalization(short_pred_norm, stats=short_stats)
 
             short_true = eval_val_extra[:short_horizon]
             short_mask = np.isfinite(short_true)
@@ -510,56 +638,37 @@ def long_term_cell() -> str:
                 f"for series {SERIES_INDEX}."
             )
 
-        validation_bank = _build_window_bank_from_split(
-            "validation",
-            context_length=CONTEXT_LENGTH,
-            horizon_length=long_horizon,
-            stride=VALIDATION_STRIDE,
-            max_series=MAX_SERIES,
-            max_windows_per_series=MAX_WINDOWS_PER_SERIES,
-        )
-        print("Long-term bank windows:", validation_bank["n_windows"])
-        print("Long-term bank series :", validation_bank["used_series"])
-        print("Long-term skipped     :", len(validation_bank["skipped"]))
-
-        long_model = _make_forecaster()
-        long_model.fit(
-            validation_bank["contexts"],
-            validation_bank["targets"],
-            context_masks=validation_bank["context_masks"],
-            target_masks=validation_bank["target_masks"],
-            context_deltas=validation_bank["context_deltas"],
-        )
-
         one_shot_window_count = dataset.windows if ROLLING_TEST_WINDOW_LIMIT is None else min(int(ROLLING_TEST_WINDOW_LIMIT), dataset.windows)
         one_shot_horizon = one_shot_window_count * dataset.prediction_length
+        long_model = None
         one_shot_model = None
         one_shot_bank_error = None
-        if ONE_SHOT_TEST_TAIL:
-            try:
-                one_shot_bank = _build_window_bank_from_split(
-                    "validation",
-                    context_length=CONTEXT_LENGTH,
-                    horizon_length=one_shot_horizon,
-                    stride=VALIDATION_STRIDE,
-                    max_series=MAX_SERIES,
-                    max_windows_per_series=MAX_WINDOWS_PER_SERIES,
-                )
-                print("One-shot bank windows:", one_shot_bank["n_windows"])
-                print("One-shot bank series :", one_shot_bank["used_series"])
-                print("One-shot skipped     :", len(one_shot_bank["skipped"]))
-
-                one_shot_model = _make_forecaster()
-                one_shot_model.fit(
-                    one_shot_bank["contexts"],
-                    one_shot_bank["targets"],
-                    context_masks=one_shot_bank["context_masks"],
-                    target_masks=one_shot_bank["target_masks"],
-                    context_deltas=one_shot_bank["context_deltas"],
-                )
-            except ValueError as exc:
-                one_shot_bank_error = str(exc)
-                print("One-shot test-tail model unavailable:", one_shot_bank_error)
+        if not SAME_SERIES_ONLY_BANK:
+            _, long_model = _fit_forecaster_from_split(
+                "validation",
+                context_length=CONTEXT_LENGTH,
+                horizon_length=long_horizon,
+                stride=VALIDATION_STRIDE,
+                max_series=MAX_SERIES,
+                max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                label="Long-term",
+                verbose=True,
+            )
+            if ONE_SHOT_TEST_TAIL:
+                try:
+                    _, one_shot_model = _fit_forecaster_from_split(
+                        "validation",
+                        context_length=CONTEXT_LENGTH,
+                        horizon_length=one_shot_horizon,
+                        stride=VALIDATION_STRIDE,
+                        max_series=MAX_SERIES,
+                        max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                        label="One-shot",
+                        verbose=True,
+                    )
+                except ValueError as exc:
+                    one_shot_bank_error = str(exc)
+                    print("One-shot test-tail model unavailable:", one_shot_bank_error)
 
         direct_errors = []
         direct_skipped = []
@@ -574,6 +683,47 @@ def long_term_cell() -> str:
         one_shot_plotted = False
 
         for eval_series_index in _evaluation_series_indices():
+            current_long_model = long_model
+            current_one_shot_model = one_shot_model
+            current_one_shot_bank_error = one_shot_bank_error
+            if SAME_SERIES_ONLY_BANK:
+                try:
+                    _, current_long_model = _fit_forecaster_from_split(
+                        "validation",
+                        context_length=CONTEXT_LENGTH,
+                        horizon_length=long_horizon,
+                        stride=VALIDATION_STRIDE,
+                        max_series=None,
+                        max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                        only_series_index=eval_series_index,
+                        label=f"Long-term series {eval_series_index}",
+                        verbose=(not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX),
+                    )
+                except ValueError as exc:
+                    direct_skipped.append((eval_series_index, f"same-series long-term bank unavailable: {exc}"))
+                    rolling_skipped.append((eval_series_index, f"same-series long-term bank unavailable: {exc}"))
+                    stitched_skipped.append((eval_series_index, f"same-series long-term bank unavailable: {exc}"))
+                    one_shot_skipped.append((eval_series_index, f"same-series long-term bank unavailable: {exc}"))
+                    continue
+
+                current_one_shot_model = None
+                current_one_shot_bank_error = None
+                if ONE_SHOT_TEST_TAIL:
+                    try:
+                        _, current_one_shot_model = _fit_forecaster_from_split(
+                            "validation",
+                            context_length=CONTEXT_LENGTH,
+                            horizon_length=one_shot_horizon,
+                            stride=VALIDATION_STRIDE,
+                            max_series=None,
+                            max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                            only_series_index=eval_series_index,
+                            label=f"One-shot series {eval_series_index}",
+                            verbose=False,
+                        )
+                    except ValueError as exc:
+                        current_one_shot_bank_error = str(exc)
+
             test_context_entry, test_label_entry = _get_test_pair(eval_series_index, TEST_WINDOW_INDEX)
             test_context = _series_from_entry(test_context_entry)
             test_label = _series_from_entry(test_label_entry)
@@ -584,14 +734,19 @@ def long_term_cell() -> str:
                 direct_skipped.append((eval_series_index, "long horizon longer than selected test label"))
                 continue
 
-            long_query = test_context[-CONTEXT_LENGTH:]
-            long_pred = long_model.forecast(
+            long_query_raw = test_context[-CONTEXT_LENGTH:]
+            long_query, long_stats = _normalize_query_context(
+                long_query_raw,
+                reference_values=test_context,
+            )
+            long_pred_norm = current_long_model.forecast(
                 long_query,
                 strategy="direct",
                 total_horizon=long_horizon,
-                query_masks=np.isfinite(long_query),
-                query_deltas=_build_deltas_from_values(long_query),
+                query_masks=np.isfinite(long_query_raw),
+                query_deltas=_build_deltas_from_values(long_query_raw),
             ).reshape(-1)
+            long_pred = invert_normalization(long_pred_norm, stats=long_stats)
 
             long_true = test_label[:long_horizon]
             long_mask = np.isfinite(long_true)
@@ -622,13 +777,19 @@ def long_term_cell() -> str:
                 lbl = _series_from_entry(lbl_entry)
                 if CONTEXT_LENGTH > len(ctx) or long_horizon > len(lbl):
                     continue
-                pred = long_model.forecast(
-                    ctx[-CONTEXT_LENGTH:],
+                ctx_query_raw = ctx[-CONTEXT_LENGTH:]
+                ctx_query, ctx_stats = _normalize_query_context(
+                    ctx_query_raw,
+                    reference_values=ctx,
+                )
+                pred_norm = current_long_model.forecast(
+                    ctx_query,
                     strategy="direct",
                     total_horizon=long_horizon,
-                    query_masks=np.isfinite(ctx[-CONTEXT_LENGTH:]),
-                    query_deltas=_build_deltas_from_values(ctx[-CONTEXT_LENGTH:]),
+                    query_masks=np.isfinite(ctx_query_raw),
+                    query_deltas=_build_deltas_from_values(ctx_query_raw),
                 ).reshape(-1)
+                pred = invert_normalization(pred_norm, stats=ctx_stats)
                 truth = lbl[:long_horizon]
                 truth_mask = np.isfinite(truth)
                 if not truth_mask.any():
@@ -664,7 +825,7 @@ def long_term_cell() -> str:
             else:
                 stitched_skipped.append((eval_series_index, "no valid stitched test-tail blocks"))
 
-            if one_shot_model is not None:
+            if current_one_shot_model is not None:
                 one_shot_val_series = _series_from_entry(_get_validation_entry(eval_series_index))
                 one_shot_true = _get_test_tail(eval_series_index, limit=ROLLING_TEST_WINDOW_LIMIT)
                 one_shot_mask = np.isfinite(one_shot_true)
@@ -675,14 +836,19 @@ def long_term_cell() -> str:
                 elif not one_shot_mask.any():
                     one_shot_skipped.append((eval_series_index, "one-shot test tail is entirely missing"))
                 else:
-                    one_shot_query = one_shot_val_series[-CONTEXT_LENGTH:]
-                    one_shot_pred = one_shot_model.forecast(
+                    one_shot_query_raw = one_shot_val_series[-CONTEXT_LENGTH:]
+                    one_shot_query, one_shot_stats = _normalize_query_context(
+                        one_shot_query_raw,
+                        reference_values=one_shot_val_series,
+                    )
+                    one_shot_pred_norm = current_one_shot_model.forecast(
                         one_shot_query,
                         strategy="direct",
                         total_horizon=one_shot_horizon,
-                        query_masks=np.isfinite(one_shot_query),
-                        query_deltas=_build_deltas_from_values(one_shot_query),
+                        query_masks=np.isfinite(one_shot_query_raw),
+                        query_deltas=_build_deltas_from_values(one_shot_query_raw),
                     ).reshape(-1)
+                    one_shot_pred = invert_normalization(one_shot_pred_norm, stats=one_shot_stats)
                     one_shot_errors.append(relative_l2_error(one_shot_true[:one_shot_horizon], one_shot_pred, mask=one_shot_mask[:one_shot_horizon]))
 
                     should_plot_one_shot = ONE_SHOT_TEST_TAIL and (
@@ -707,7 +873,7 @@ def long_term_cell() -> str:
             else:
                 print("No stitched direct test-tail forecasts could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
             if ONE_SHOT_TEST_TAIL:
-                if one_shot_model is None:
+                if one_shot_model is None and not SAME_SERIES_ONLY_BANK:
                     print("No one-shot direct test-tail model was built:", one_shot_bank_error)
                 elif one_shot_errors:
                     _print_error_summary("Long-term one-shot direct", one_shot_errors, one_shot_skipped)
@@ -729,10 +895,12 @@ def long_term_cell() -> str:
             else:
                 print("No stitched direct test-tail forecast could be evaluated with the current CONTEXT_LENGTH/LONG_HORIZON.")
             if ONE_SHOT_TEST_TAIL:
-                if one_shot_model is None:
-                    print("One-shot direct tail unavailable:", one_shot_bank_error)
-                elif one_shot_errors:
+                if one_shot_errors:
                     print("One-shot direct tail L2   :", one_shot_errors[0])
+                elif current_one_shot_bank_error is not None:
+                    print("One-shot direct tail unavailable:", current_one_shot_bank_error)
+                elif one_shot_model is None and not SAME_SERIES_ONLY_BANK:
+                    print("One-shot direct tail unavailable:", one_shot_bank_error)
                 else:
                     print("No one-shot direct test-tail forecast could be evaluated with the current CONTEXT_LENGTH/one-shot horizon.")
             if rolling_means:
@@ -760,6 +928,24 @@ def recursive_cell() -> str:
         plotted = False
 
         for eval_series_index in _evaluation_series_indices():
+            current_long_model = long_model
+            if SAME_SERIES_ONLY_BANK:
+                try:
+                    _, current_long_model = _fit_forecaster_from_split(
+                        "validation",
+                        context_length=CONTEXT_LENGTH,
+                        horizon_length=long_horizon,
+                        stride=VALIDATION_STRIDE,
+                        max_series=None,
+                        max_windows_per_series=MAX_WINDOWS_PER_SERIES,
+                        only_series_index=eval_series_index,
+                        label=f"Recursive series {eval_series_index}",
+                        verbose=(not EVALUATE_ALL_SERIES and eval_series_index == SERIES_INDEX),
+                    )
+                except ValueError as exc:
+                    recursive_skipped.append((eval_series_index, f"same-series recursive bank unavailable: {exc}"))
+                    continue
+
             eval_val_series = _series_from_entry(_get_validation_entry(eval_series_index))
             if CONTEXT_LENGTH > len(eval_val_series):
                 recursive_skipped.append((eval_series_index, "context longer than validation prefix"))
@@ -773,16 +959,21 @@ def recursive_cell() -> str:
                 raise ValueError("RECURSIVE_TOTAL_HORIZON must be positive.")
             recursive_total_horizon = min(recursive_total_horizon, len(recursive_truth))
 
-            recursive_query = eval_val_series[-CONTEXT_LENGTH:]
-            recursive_pred = long_model.forecast(
+            recursive_query_raw = eval_val_series[-CONTEXT_LENGTH:]
+            recursive_query, recursive_stats = _normalize_query_context(
+                recursive_query_raw,
+                reference_values=eval_val_series,
+            )
+            recursive_pred_norm = current_long_model.forecast(
                 recursive_query,
                 strategy="chunked",
                 total_horizon=recursive_total_horizon,
                 chunk_length=recursive_chunk_length,
-                query_masks=np.isfinite(recursive_query),
-                query_deltas=_build_deltas_from_values(recursive_query),
+                query_masks=np.isfinite(recursive_query_raw),
+                query_deltas=_build_deltas_from_values(recursive_query_raw),
                 future_deltas=np.full((1, recursive_total_horizon), DELTA_STEP, dtype=float),
             ).reshape(-1)
+            recursive_pred = invert_normalization(recursive_pred_norm, stats=recursive_stats)
 
             recursive_true = recursive_truth[:recursive_total_horizon]
             recursive_true_mask = recursive_mask[:recursive_total_horizon]

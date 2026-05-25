@@ -17,6 +17,7 @@ KernelFamily = Literal[
     "linear",
 ]
 RepresentationMode = Literal["plain", "interleaved", "masked"]
+NormalizationMode = Literal["none", "robust_series", "robust_context"]
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,9 @@ class WindowedForecastDataset:
     target_masks: np.ndarray
     context_deltas: np.ndarray
     target_deltas: np.ndarray
+    normalization: NormalizationMode
+    window_locations: np.ndarray
+    window_scales: np.ndarray
 
     @property
     def series_length(self) -> int:
@@ -68,6 +72,12 @@ class KernelConfig:
     gamma: float | None = None
     coef0: float = 1.0
     mask_decay_gamma: float = 1.0
+
+
+@dataclass(frozen=True)
+class NormalizationStats:
+    location: float = 0.0
+    scale: float = 1.0
 
 
 def _canonical_kernel_family(name: str) -> KernelFamily:
@@ -118,6 +128,16 @@ def _validate_positive_int(value: int, name: str) -> int:
     if value <= 0:
         raise ValueError(f"{name} must be positive. Received {value}.")
     return value
+
+
+def _validate_normalization_mode(mode: str) -> NormalizationMode:
+    normalized = str(mode).lower()
+    if normalized not in {"none", "robust_series", "robust_context"}:
+        raise ValueError(
+            f"Unsupported normalization mode '{mode}'. "
+            "Supported modes are: none, robust_series, robust_context."
+        )
+    return normalized  # type: ignore[return-value]
 
 
 def _validate_kernel_config(config: KernelConfig) -> KernelConfig:
@@ -245,6 +265,73 @@ def prepare_observed_time_series(
     return ObservedTimeSeries(values=series, observed_mask=mask, deltas=delta_arr)
 
 
+def robust_location_scale(
+    values: np.ndarray,
+    *,
+    observed_mask: np.ndarray | None = None,
+    min_scale: float = 1e-6,
+) -> NormalizationStats:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if observed_mask is None:
+        mask = np.isfinite(arr)
+    else:
+        mask = np.asarray(observed_mask, dtype=bool).reshape(-1)
+        if mask.shape != arr.shape:
+            raise ValueError("values and observed_mask must have the same shape.")
+        mask &= np.isfinite(arr)
+
+    observed = arr[mask]
+    if observed.size == 0:
+        return NormalizationStats(location=0.0, scale=1.0)
+
+    loc = float(np.median(observed))
+    q75, q25 = np.percentile(observed, [75.0, 25.0])
+    iqr_scale = float((q75 - q25) / 1.349) if q75 > q25 else 0.0
+    mad = float(np.median(np.abs(observed - loc)))
+    mad_scale = 1.4826 * mad
+    std_scale = float(np.std(observed))
+    scale = max(min_scale, iqr_scale, mad_scale, std_scale)
+    return NormalizationStats(location=loc, scale=scale)
+
+
+def compute_normalization_stats(
+    values: np.ndarray,
+    *,
+    observed_mask: np.ndarray | None = None,
+    mode: NormalizationMode = "none",
+    min_scale: float = 1e-6,
+) -> NormalizationStats:
+    validated_mode = _validate_normalization_mode(mode)
+    if validated_mode == "none":
+        return NormalizationStats(location=0.0, scale=1.0)
+    return robust_location_scale(values, observed_mask=observed_mask, min_scale=min_scale)
+
+
+def apply_normalization(
+    values: np.ndarray,
+    *,
+    stats: NormalizationStats,
+    observed_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    transformed = (arr - float(stats.location)) / max(float(stats.scale), EPS)
+    if observed_mask is None:
+        return transformed
+    mask = np.asarray(observed_mask, dtype=bool)
+    if mask.shape != arr.shape:
+        raise ValueError("values and observed_mask must have the same shape.")
+    return np.where(mask, transformed, 0.0)
+
+
+def invert_normalization(
+    values: np.ndarray,
+    *,
+    stats: NormalizationStats,
+) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    return arr * float(stats.scale) + float(stats.location)
+
+
 def rolling_window_end_indices(
     series_length: int,
     *,
@@ -290,9 +377,11 @@ def make_windowed_forecasting_dataset(
     max_windows: int | None = None,
     include_last: bool = True,
     drop_all_missing_targets: bool = True,
+    normalization: NormalizationMode = "none",
 ) -> WindowedForecastDataset:
     context_length = _validate_positive_int(context_length, "context_length")
     horizon_length = _validate_positive_int(horizon_length, "horizon_length")
+    normalization = _validate_normalization_mode(normalization)
 
     prepared = prepare_observed_time_series(
         values,
@@ -318,21 +407,48 @@ def make_windowed_forecasting_dataset(
     target_masks: list[np.ndarray] = []
     context_deltas: list[np.ndarray] = []
     target_deltas: list[np.ndarray] = []
+    window_locations: list[float] = []
+    window_scales: list[float] = []
+
+    series_stats = None
+    if normalization == "robust_series":
+        series_stats = compute_normalization_stats(
+            series,
+            observed_mask=mask,
+            mode="robust_series",
+        )
 
     for end_idx in end_indices:
         context_slice = slice(end_idx - context_length, end_idx)
         target_slice = slice(end_idx, end_idx + horizon_length)
 
+        context_values = series[context_slice]
+        target_values = series[target_slice]
+        context_mask = mask[context_slice]
         target_mask = mask[target_slice]
         if drop_all_missing_targets and not target_mask.any():
             continue
 
-        contexts.append(series[context_slice].copy())
-        targets.append(series[target_slice].copy())
-        context_masks.append(mask[context_slice].copy())
+        if normalization == "robust_context":
+            stats = compute_normalization_stats(
+                context_values,
+                observed_mask=context_mask,
+                mode="robust_context",
+            )
+        elif normalization == "robust_series":
+            assert series_stats is not None
+            stats = series_stats
+        else:
+            stats = NormalizationStats(location=0.0, scale=1.0)
+
+        contexts.append(apply_normalization(context_values, stats=stats, observed_mask=context_mask))
+        targets.append(apply_normalization(target_values, stats=stats, observed_mask=target_mask))
+        context_masks.append(context_mask.copy())
         target_masks.append(target_mask.copy())
         context_deltas.append(delta_arr[context_slice].copy())
         target_deltas.append(delta_arr[target_slice].copy())
+        window_locations.append(float(stats.location))
+        window_scales.append(float(stats.scale))
 
     if not contexts:
         raise ValueError(
@@ -350,6 +466,9 @@ def make_windowed_forecasting_dataset(
         target_masks=np.vstack(target_masks),
         context_deltas=np.vstack(context_deltas),
         target_deltas=np.vstack(target_deltas),
+        normalization=normalization,
+        window_locations=np.asarray(window_locations, dtype=float),
+        window_scales=np.asarray(window_scales, dtype=float),
     )
 
 

@@ -99,7 +99,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
         DEGREE = 2
         GAMMA = None
         COEF0 = 1.0
-        MASK_DECAY_GAMMA = {mask_decay_gamma}       # 1.0 = uniform masked kernel; smaller values emphasize recent entries
+        MASK_DECAY_GAMMA = {mask_decay_gamma}       # 1.0 = uniform coordinate weighting; smaller values emphasize recent entries
         REGULARIZATION = {regularization}
 
         # Delta handling for the interleaved representation.

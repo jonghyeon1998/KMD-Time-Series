@@ -433,6 +433,16 @@ def _resolve_gamma(config: KernelConfig, feature_dim: int) -> float:
     return 1.0 / max(int(feature_dim), 1)
 
 
+def _coordinate_decay_weights(length: int, *, decay_gamma: float) -> np.ndarray:
+    length = _validate_positive_int(length, "length")
+    if decay_gamma == 1.0:
+        return np.ones(length, dtype=float)
+    # Windows are stored oldest -> newest, so the most recent coordinate gets weight 1.0
+    # and older coordinates are geometrically downweighted by powers of decay_gamma.
+    powers = np.arange(length - 1, -1, -1, dtype=float)
+    return decay_gamma ** powers
+
+
 def _pairwise_sq_dists(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     X_sq = np.sum(X * X, axis=1, keepdims=True)
     Y_sq = np.sum(Y * Y, axis=1, keepdims=True).T
@@ -442,6 +452,10 @@ def _pairwise_sq_dists(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
 
 def _pairwise_l1_dists(X: np.ndarray, Y: np.ndarray) -> np.ndarray:
     return np.sum(np.abs(X[:, None, :] - Y[None, :, :]), axis=2)
+
+
+def _pairwise_weighted_l1_dists(X: np.ndarray, Y: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    return np.sum(np.abs(X[:, None, :] - Y[None, :, :]) * weights[None, None, :], axis=2)
 
 
 def build_feature_kernel_matrix(
@@ -454,43 +468,40 @@ def build_feature_kernel_matrix(
     A = _ensure_2d(X, "X")
     B = A if Y is None else _ensure_2d(Y, "Y")
     family = config.family
+    coord_weights = _coordinate_decay_weights(A.shape[1], decay_gamma=config.mask_decay_gamma)
+    sqrt_coord_weights = np.sqrt(coord_weights)
+
+    if B.shape[1] != A.shape[1]:
+        raise ValueError("X and Y must have the same feature dimension.")
+
+    weighted_dot = (A * coord_weights) @ B.T
 
     if family == "linear":
-        return config.amplitude * (A @ B.T)
+        return config.amplitude * weighted_dot
 
     if family == "polynomial":
         gamma = _resolve_gamma(config, A.shape[1])
-        return config.amplitude * (gamma * (A @ B.T) + config.coef0) ** config.degree
+        return config.amplitude * (gamma * weighted_dot + config.coef0) ** config.degree
 
     if family == "rbf":
-        sq_dists = _pairwise_sq_dists(A, B)
+        sq_dists = _pairwise_sq_dists(A * sqrt_coord_weights, B * sqrt_coord_weights)
         return config.amplitude * np.exp(-0.5 * sq_dists / (config.length_scale ** 2))
 
     if family == "laplace":
-        l1_dists = _pairwise_l1_dists(A, B)
+        l1_dists = _pairwise_weighted_l1_dists(A, B, coord_weights)
         return config.amplitude * np.exp(-l1_dists / max(config.length_scale, EPS))
 
     if family == "inverse_quadratic":
-        sq_dists = _pairwise_sq_dists(A, B)
+        sq_dists = _pairwise_sq_dists(A * sqrt_coord_weights, B * sqrt_coord_weights)
         return config.amplitude / (1.0 + sq_dists / (config.length_scale ** 2))
 
     if family == "matern25":
-        sq_dists = _pairwise_sq_dists(A, B)
+        sq_dists = _pairwise_sq_dists(A * sqrt_coord_weights, B * sqrt_coord_weights)
         r = np.sqrt(sq_dists + EPS)
         scaled = np.sqrt(5.0) * r / max(config.length_scale, EPS)
         return config.amplitude * (1.0 + scaled + (scaled ** 2) / 3.0) * np.exp(-scaled)
 
     raise AssertionError(f"Unhandled kernel family '{family}'.")
-
-
-def _masked_decay_weights(length: int, *, decay_gamma: float) -> np.ndarray:
-    length = _validate_positive_int(length, "length")
-    if decay_gamma == 1.0:
-        return np.ones(length, dtype=float)
-    # Windows are stored oldest -> newest, so the most recent coordinate gets weight 1.0
-    # and older coordinates are geometrically downweighted by powers of mask_decay_gamma.
-    powers = np.arange(length - 1, -1, -1, dtype=float)
-    return decay_gamma ** powers
 
 
 def _masked_pair_kernel(
@@ -506,7 +517,7 @@ def _masked_pair_kernel(
     if overlap_count == 0:
         return 0.0
 
-    coord_weights = _masked_decay_weights(x.shape[0], decay_gamma=config.mask_decay_gamma)
+    coord_weights = _coordinate_decay_weights(x.shape[0], decay_gamma=config.mask_decay_gamma)
     active_weights = coord_weights[overlap]
     x_obs = x[overlap]
     y_obs = y[overlap]

@@ -62,6 +62,7 @@ def import_cell() -> str:
             invert_normalization,
             make_windowed_forecasting_dataset,
             relative_l2_error,
+            trim_leading_unobserved_prefix,
         )
         """
     ).strip()
@@ -76,6 +77,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
     recursive_chunk_length = int(preset["recursive_chunk_length"])
     max_series = int(preset.get("max_series", 200))
     max_windows_per_series = int(preset.get("max_windows_per_series", 20))
+    trim_leading_unobserved = "True" if dataset_name.startswith("electricity/") else "False"
     return dedent(
         f"""
         DATASET_NAME = "{dataset_name}"
@@ -95,6 +97,7 @@ def parameter_cell(dataset_name: str, preset: dict) -> str:
         TRAIN_STRIDE = None          # defaults to SHORT_HORIZON
         VALIDATION_STRIDE = None     # defaults to LONG_HORIZON
         NORMALIZATION = "none"      # one of: "none", "robust_series", "robust_context"
+        TRIM_LEADING_UNOBSERVED = {trim_leading_unobserved}   # useful for left-padded datasets like electricity/*
 
         REPRESENTATION = "{representation}"    # one of: "masked", "interleaved", "plain"
         KERNEL_FAMILY = "rbf"        # one of: rbf, matern25, polynomial, laplace, inverse_quadratic, linear
@@ -160,7 +163,10 @@ def helper_cell() -> str:
 
 
         def _series_from_entry(entry) -> np.ndarray:
-            return np.asarray(entry["target"], dtype=float).reshape(-1)
+            values = np.asarray(entry["target"], dtype=float).reshape(-1)
+            if TRIM_LEADING_UNOBSERVED:
+                values, _, _ = trim_leading_unobserved_prefix(values)
+            return values
 
 
         def _get_train_entry(series_index: int):
@@ -463,6 +469,8 @@ def preview_cell() -> str:
         train_entry = _get_train_entry(SERIES_INDEX)
         val_entry = _get_validation_entry(SERIES_INDEX)
 
+        raw_train_series = np.asarray(train_entry["target"], dtype=float).reshape(-1)
+        _, _, train_trim_offset = trim_leading_unobserved_prefix(raw_train_series)
         train_series = _series_from_entry(train_entry)
         val_series = _series_from_entry(val_entry)
         val_extra = val_series[len(train_series):]
@@ -476,6 +484,8 @@ def preview_cell() -> str:
         print("validation\\\\train len :", len(val_extra))
         print("test windows         :", dataset.windows)
         print("test tail length     :", len(test_tail))
+        print("trim leading missing :", TRIM_LEADING_UNOBSERVED)
+        print("trimmed prefix len   :", train_trim_offset if TRIM_LEADING_UNOBSERVED else 0)
 
         fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True)
         x_full = np.arange(1, len(full_series) + 1)

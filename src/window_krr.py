@@ -250,6 +250,25 @@ def _prepare_deltas(
     return arr
 
 
+def trim_leading_unobserved_prefix(
+    values: np.ndarray,
+    *,
+    observed_mask: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    arr = np.asarray(values, dtype=float).reshape(-1)
+    if observed_mask is None:
+        mask = np.isfinite(arr)
+    else:
+        mask = np.asarray(observed_mask, dtype=bool).reshape(-1)
+        if mask.shape != arr.shape:
+            raise ValueError("values and observed_mask must have the same shape.")
+        mask &= np.isfinite(arr)
+
+    observed_idx = np.flatnonzero(mask)
+    first_observed = int(observed_idx[0]) if observed_idx.size > 0 else arr.shape[0]
+    return arr[first_observed:].copy(), mask[first_observed:].copy(), first_observed
+
+
 def prepare_observed_time_series(
     values: np.ndarray,
     *,
@@ -378,15 +397,41 @@ def make_windowed_forecasting_dataset(
     include_last: bool = True,
     drop_all_missing_targets: bool = True,
     normalization: NormalizationMode = "none",
+    trim_leading_unobserved: bool = False,
 ) -> WindowedForecastDataset:
     context_length = _validate_positive_int(context_length, "context_length")
     horizon_length = _validate_positive_int(horizon_length, "horizon_length")
     normalization = _validate_normalization_mode(normalization)
 
+    raw_values = np.asarray(values, dtype=float).reshape(-1)
+    if observed_mask is None:
+        raw_mask = np.isfinite(raw_values)
+    else:
+        raw_mask = np.asarray(observed_mask, dtype=bool).reshape(-1)
+        if raw_mask.shape != raw_values.shape:
+            raise ValueError("values and observed_mask must have the same shape.")
+        raw_mask &= np.isfinite(raw_values)
+
+    raw_deltas = None
+    if deltas is not None:
+        raw_deltas = np.asarray(deltas, dtype=float).reshape(-1)
+        if raw_deltas.shape[0] != raw_values.shape[0]:
+            raise ValueError(
+                f"deltas must have length {raw_values.shape[0]}. Received {raw_deltas.shape[0]}."
+            )
+
+    if trim_leading_unobserved:
+        raw_values, raw_mask, trim_offset = trim_leading_unobserved_prefix(
+            raw_values,
+            observed_mask=raw_mask,
+        )
+        if raw_deltas is not None:
+            raw_deltas = raw_deltas[trim_offset:].copy()
+
     prepared = prepare_observed_time_series(
-        values,
-        observed_mask=observed_mask,
-        deltas=deltas,
+        raw_values,
+        observed_mask=raw_mask,
+        deltas=raw_deltas,
     )
     series = prepared.values
     mask = prepared.observed_mask

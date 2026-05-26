@@ -184,7 +184,11 @@ def deltas_from_timestamps(
 
 
 def build_regular_deltas(length: int, *, step: float = 1.0, initial_delta: float | None = None) -> np.ndarray:
-    length = _validate_positive_int(length, "length")
+    length = int(length)
+    if length < 0:
+        raise ValueError(f"length must be non-negative. Received {length}.")
+    if length == 0:
+        return np.zeros(0, dtype=float)
     delta0 = float(step if initial_delta is None else initial_delta)
     deltas = np.full(length, float(step), dtype=float)
     deltas[0] = delta0

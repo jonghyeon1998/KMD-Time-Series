@@ -327,6 +327,9 @@ def helper_cell() -> str:
                 if only_series_index is None and max_series is not None and series_index >= max_series:
                     break
                 values = _series_from_entry(entry)
+                if values.size == 0:
+                    skipped.append((series_index, "series is empty after trimming leading unobserved prefix"))
+                    continue
                 observed_mask = np.isfinite(values)
                 deltas = _build_deltas_from_values(values)
                 try:

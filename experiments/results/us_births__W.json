@@ -9,7 +9,7 @@
     "MAX_BLOCKS_L2": 30,
     "MAX_WINDOWS_PER_SERIES": 200,
     "SIGMA_N_L1": 0.1,
-    "SIGMA_N_L2": 0.1,
+    "SIGMA_N_L2": 0.01,
     "AMPLITUDE_L1": 1.0,
     "AMPLITUDE_L2": 1.0,
     "LOG_ELL_LO": 0.0,
@@ -22,21 +22,22 @@
     "EVAL_SERIES_LIMIT": 100
   },
   "short_term_MASE": [
-    1.8075235871758208
+    1.807772102683094
   ],
   "test_MASE": [
-    0.8065943196351717,
-    0.8292842200111471,
-    1.4304271048074653,
-    1.493724664459197,
-    1.7756729346267395
+    0.8085745350788591,
+    0.8294477920918597,
+    1.4296393018574154,
+    1.4926658060798217,
+    1.7757079436039709
   ],
   "metrics": {
-    "short_mean_MASE": 1.8075235871758208,
-    "short_median_MASE": 1.8075235871758208,
+    "short_mean_MASE": 1.807772102683094,
+    "short_median_MASE": 1.807772102683094,
     "short_n_evaluated": 1,
-    "test_mean_MASE": 1.2671406487079442,
-    "test_median_MASE": 1.4304271048074653,
+    "short_mean_s_naive_MASE": 0.3807880672060527,
+    "test_mean_MASE": 1.2672070757423852,
+    "test_median_MASE": 1.4296393018574154,
     "test_n_evaluated": 5,
     "test_mean_s_naive_MASE": 1.1644244934526609
   }

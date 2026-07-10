@@ -662,6 +662,72 @@ class NestedKrigingForecaster:
             return mean_out[0], float(var_out[0])
         return mean_out, var_out
 
+    # ------------------------------------------------------------------
+    def save_state(
+        self,
+        path: "str | pathlib.Path",
+        *,
+        dataset_name: str = "",
+    ) -> None:
+        """Pre-compute and save block-centroid state for cross-dataset kriging.
+
+        For each Layer-2 block m the following are stored:
+
+        * ``centroids[m]``       — x̄_m = mean of block-m windows  (L,)
+        * ``centroid_preds[m]``  — block-m local GP prediction at x̄_m  (H,)
+        * ``centroid_vars[m]``   — block-m local GP variance at x̄_m  scalar
+
+        These are the ingredients needed by
+        :class:`CrossDatasetNestedKrigingForecaster` to incorporate this
+        model as a data source without re-running the full fit.
+
+        Parameters
+        ----------
+        path         : output path; a ``.npz`` suffix is added if absent.
+        dataset_name : tag stored verbatim for bookkeeping.
+        """
+        import pathlib as _pathlib
+        self._check_fitted()
+        blocks = self._fitted_blocks  # type: ignore[assignment]
+        M      = len(blocks)
+        if M == 0:
+            raise RuntimeError("No fitted blocks; cannot save state.")
+
+        L = blocks[0].X.shape[1]
+        H = self._horizon_length
+        centroids      = np.zeros((M, L), dtype=float)
+        centroid_preds = np.zeros((M, H), dtype=float)
+        centroid_vars  = np.zeros(M, dtype=float)
+
+        for m, blk in enumerate(blocks):
+            x_bar   = blk.X.mean(axis=0)                       # (L,)
+            centroids[m] = x_bar
+            ell_bar = float(self.ell_field.predict_ell(x_bar[None, :])[0])
+
+            # k(x̄_m, X_m) — cross-covariance row  (n_m,)
+            k_c = gibbs_kernel_matrix(
+                x_bar[None, :], np.array([ell_bar]),
+                blk.X, blk.ell,
+                amplitude=self.amplitude,
+            ).ravel()
+
+            # Local prediction: ŷ_m(x̄_m) = k_c @ α_m
+            centroid_preds[m] = k_c @ blk.dual
+
+            # Local variance: σ²_m = amplitude − k_c^T (K+σ²I)⁻¹ k_c
+            alpha_c = np.linalg.solve(blk.chol.T, np.linalg.solve(blk.chol, k_c))
+            centroid_vars[m] = max(float(self.amplitude) - float(k_c @ alpha_c), 0.0)
+
+        np.savez_compressed(
+            _pathlib.Path(path),
+            centroids=centroids,
+            centroid_preds=centroid_preds,
+            centroid_vars=centroid_vars,
+            context_length=np.array(L, dtype=int),
+            horizon_length=np.array(H, dtype=int),
+            dataset_name=np.array(dataset_name),
+        )
+
 
 # ---------------------------------------------------------------------------
 # Convenience: pool windows from a collection of series
@@ -1765,3 +1831,361 @@ class MultivariateNestedKrigingForecaster:
         if squeeze:
             return means[0], variances[0]
         return means, variances
+
+    # ------------------------------------------------------------------
+    def save_state(
+        self,
+        path: "str | pathlib.Path",
+        *,
+        dataset_name: str = "",
+    ) -> None:
+        """Save cross-dataset state for all p channels into one ``.npz`` file.
+
+        All channels' block centroids are concatenated; a ``channel_indices``
+        array records which block belongs to which channel.
+
+        Parameters
+        ----------
+        path         : output ``.npz`` file path.
+        dataset_name : tag for bookkeeping.
+        """
+        import pathlib as _pathlib
+
+        all_centroids: list[np.ndarray] = []
+        all_preds:     list[np.ndarray] = []
+        all_vars:      list[float]      = []
+        all_chidx:     list[int]        = []
+        L_ref = H_ref = None
+
+        for ch, fc in enumerate(self._forecasters):
+            if fc._fitted_blocks is None:
+                continue
+            fc._check_fitted()
+            blocks = fc._fitted_blocks  # type: ignore[assignment]
+            L = blocks[0].X.shape[1]
+            H = fc._horizon_length
+            if L_ref is None:
+                L_ref, H_ref = L, H
+
+            for blk in blocks:
+                x_bar   = blk.X.mean(axis=0)
+                ell_bar = float(fc.ell_field.predict_ell(x_bar[None, :])[0])
+                k_c = gibbs_kernel_matrix(
+                    x_bar[None, :], np.array([ell_bar]),
+                    blk.X, blk.ell,
+                    amplitude=fc.amplitude,
+                ).ravel()
+                alpha_c = np.linalg.solve(blk.chol.T, np.linalg.solve(blk.chol, k_c))
+
+                all_centroids.append(x_bar)
+                all_preds.append(k_c @ blk.dual)
+                all_vars.append(max(float(fc.amplitude) - float(k_c @ alpha_c), 0.0))
+                all_chidx.append(ch)
+
+        if not all_centroids:
+            raise RuntimeError("No fitted blocks found in any channel; cannot save state.")
+
+        np.savez_compressed(
+            _pathlib.Path(path),
+            centroids=np.vstack(all_centroids),          # (M_total, L)
+            centroid_preds=np.vstack(all_preds),         # (M_total, H)
+            centroid_vars=np.array(all_vars, dtype=float),
+            channel_indices=np.array(all_chidx, dtype=int),
+            context_length=np.array(L_ref, dtype=int),
+            horizon_length=np.array(H_ref, dtype=int),
+            n_channels=np.array(self.n_channels, dtype=int),
+            dataset_name=np.array(dataset_name),
+        )
+
+
+# ===========================================================================
+# Cross-dataset nested kriging layer
+# ===========================================================================
+
+import pathlib as _pathlib
+
+
+# ---------------------------------------------------------------------------
+# ACF embedding
+# ---------------------------------------------------------------------------
+
+def acf_embedding(X: np.ndarray, d: int = 20) -> np.ndarray:
+    """Map context windows to a d-dimensional sample-ACF feature vector.
+
+    For each row x ∈ ℝ^L the sample autocorrelation at lag k is:
+
+        ρ̂_k = Σ_{t=0}^{L-k-1} (x_t − x̄)(x_{t+k} − x̄)
+               ─────────────────────────────────────────────
+               Σ_{t=0}^{L-1}   (x_t − x̄)²
+
+    The result lives in [−1, 1]^d and is well-defined for any context
+    length L ≥ d+1.  Rows with near-zero variance return the zero vector.
+
+    Parameters
+    ----------
+    X : (N, L) or (L,) array of context windows.
+    d : number of ACF lags (embedding dimension).
+
+    Returns
+    -------
+    phi : (N, d) or (d,) ACF embeddings.
+    """
+    squeeze = X.ndim == 1
+    X = np.atleast_2d(np.asarray(X, dtype=float))
+    N, L = X.shape
+    d_eff = min(d, L - 1)           # can't exceed L-1 lags
+
+    X_c = X - X.mean(axis=1, keepdims=True)              # (N, L) centred
+    var = np.sum(X_c ** 2, axis=1)                        # (N,)
+
+    phi = np.zeros((N, d_eff), dtype=float)
+    for k in range(1, d_eff + 1):
+        cov_k = np.sum(X_c[:, : L - k] * X_c[:, k:], axis=1)   # (N,)
+        phi[:, k - 1] = np.where(var > 1e-12, cov_k / np.where(var > 1e-12, var, 1.0), 0.0)
+
+    # Pad with zeros if d_eff < d (only when L is very short)
+    if d_eff < d:
+        phi = np.pad(phi, ((0, 0), (0, d - d_eff)))
+
+    return phi[0] if squeeze else phi
+
+
+# ---------------------------------------------------------------------------
+# load_nk_state  (pair of NestedKrigingForecaster.save_state)
+# ---------------------------------------------------------------------------
+
+def load_nk_state(path: "str | _pathlib.Path") -> dict:
+    """Load a saved nested-kriging model state.
+
+    Accepts files written by either
+    :meth:`NestedKrigingForecaster.save_state` or
+    :meth:`MultivariateNestedKrigingForecaster.save_state`.
+
+    Returns
+    -------
+    dict with keys:
+
+    ``centroids``       : (M, L) block centroid context windows
+    ``centroid_preds``  : (M, H) local predictions at each centroid
+    ``centroid_vars``   : (M,) local GP variance at each centroid
+    ``context_length``  : int
+    ``horizon_length``  : int
+    ``dataset_name``    : str
+    ``channel_indices`` : (M,) int – only present in multivariate states
+    ``n_channels``      : int     – only present in multivariate states
+    """
+    data = np.load(_pathlib.Path(path), allow_pickle=True)
+    out: dict = {
+        "centroids":      data["centroids"],
+        "centroid_preds": data["centroid_preds"],
+        "centroid_vars":  data["centroid_vars"],
+        "context_length": int(data["context_length"]),
+        "horizon_length": int(data["horizon_length"]),
+        "dataset_name":   str(data["dataset_name"]),
+    }
+    if "channel_indices" in data:
+        out["channel_indices"] = data["channel_indices"]
+        out["n_channels"]      = int(data["n_channels"])
+    return out
+
+
+# ---------------------------------------------------------------------------
+# CrossDatasetNestedKrigingForecaster
+# ---------------------------------------------------------------------------
+
+class CrossDatasetNestedKrigingForecaster:
+    """Second-level Rullière aggregation across multiple per-dataset NK models.
+
+    Each fitted :class:`NestedKrigingForecaster` (or
+    :class:`MultivariateNestedKrigingForecaster`) contributes M_d block
+    centroids to a global pool.  Because different datasets may have
+    different context lengths L_d, all centroids are projected to a common
+    d-dimensional ACF feature space via :func:`acf_embedding` before the
+    cross-dataset kernel matrix is assembled.
+
+    At prediction time the query context x* is ACF-embedded and the
+    standard Rullière aggregation is applied in ℝ^d:
+
+        ŷ(x*) = c(φ*)^T [C + D]⁻¹ μ̂
+
+    where
+      * C_{ij} = k_RBF(φ_i, φ_j)  — RBF kernel in ACF space
+      * D_{ii} = σ̂²_i + σ_n       — local GP variance (noise floor)
+      * μ̂_i   = ŷ_i(x̄_i)         — local block prediction at centroid i
+      * φ*     = φ(x*)            — ACF embedding of the query
+
+    Parameters
+    ----------
+    acf_dim      : dimension of the ACF embedding (number of lags).  Default 20.
+    length_scale : RBF length-scale in ACF space.  ``None`` (default) triggers
+                   the median-heuristic: ls = median pairwise distance.
+    amplitude    : RBF amplitude σ_f² in ACF space.  Default 1.0.
+    sigma_n      : noise floor added to ``centroid_vars`` for numerical
+                   stability.  Default 1e-3.
+    """
+
+    def __init__(
+        self,
+        *,
+        acf_dim: int = 20,
+        length_scale: float | None = None,
+        amplitude: float = 1.0,
+        sigma_n: float = 1e-3,
+    ) -> None:
+        self.acf_dim        = int(acf_dim)
+        self._length_scale  = length_scale
+        self.amplitude      = float(amplitude)
+        self.sigma_n        = float(sigma_n)
+
+        # Set after fit()
+        self._phi_centroids:  np.ndarray | None = None
+        self._centroid_preds: np.ndarray | None = None
+        self._max_H: int   = 0
+        self._chol_CD: np.ndarray | None = None
+        self.length_scale_: float = 1.0
+
+    # ------------------------------------------------------------------
+    def fit(
+        self,
+        states: list[dict],
+    ) -> "CrossDatasetNestedKrigingForecaster":
+        """Build the cross-dataset aggregation system from saved model states.
+
+        Parameters
+        ----------
+        states : list of dicts returned by :func:`load_nk_state`.  Each must
+                 contain ``centroids`` (M, L), ``centroid_preds`` (M, H), and
+                 ``centroid_vars`` (M,).
+
+        Returns
+        -------
+        self
+        """
+        if not states:
+            raise ValueError("states must be a non-empty list.")
+
+        d     = self.acf_dim
+        max_H = max(s["horizon_length"] for s in states)
+
+        phi_list  = []
+        pred_list = []
+        var_list  = []
+
+        for s in states:
+            centroids = np.asarray(s["centroids"],      dtype=float)   # (M, L)
+            preds     = np.asarray(s["centroid_preds"], dtype=float)   # (M, H_d)
+            cvars     = np.asarray(s["centroid_vars"],  dtype=float)   # (M,)
+
+            phi = acf_embedding(centroids, d)                          # (M, d)
+
+            # Pad predictions to max_H with constant extrapolation
+            M, H_d = preds.shape
+            padded = np.zeros((M, max_H), dtype=float)
+            padded[:, :H_d] = preds
+            if H_d < max_H:
+                padded[:, H_d:] = preds[:, -1:]  # repeat last step
+
+            phi_list.append(phi)
+            pred_list.append(padded)
+            var_list.append(cvars)
+
+        self._phi_centroids  = np.vstack(phi_list)    # (M_total, d)
+        self._centroid_preds = np.vstack(pred_list)   # (M_total, max_H)
+        self._max_H          = max_H
+
+        centroid_vars = np.concatenate(var_list)       # (M_total,)
+
+        # Length-scale: median heuristic on pairwise ACF distances
+        if self._length_scale is None:
+            dists2 = _pairwise_sq_dists(self._phi_centroids, self._phi_centroids)
+            positive = dists2[dists2 > 0]
+            median_d2 = float(np.median(positive)) if positive.size > 0 else 1.0
+            self.length_scale_ = float(np.sqrt(max(median_d2, _EPS)))
+        else:
+            self.length_scale_ = float(self._length_scale)
+
+        # C = RBF(phi_centroids, phi_centroids) in ACF space
+        C = _rbf_kernel(
+            self._phi_centroids, self._phi_centroids,
+            length_scale=self.length_scale_,
+            amplitude=self.amplitude,
+        )                                              # (M_total, M_total)
+
+        D = centroid_vars + self.sigma_n               # noise floor
+        self._chol_CD = _safe_cholesky(C + np.diag(D))
+
+        return self
+
+    # ------------------------------------------------------------------
+    def _check_fitted(self) -> None:
+        if self._chol_CD is None:
+            raise RuntimeError("Call fit() before predict().")
+
+    # ------------------------------------------------------------------
+    def predict(
+        self,
+        query_context: np.ndarray,
+        target_horizon: int | None = None,
+    ) -> np.ndarray:
+        """Predict for a single query context using cross-dataset aggregation.
+
+        Parameters
+        ----------
+        query_context  : (L,) normalised context window from any dataset.
+        target_horizon : output steps.  Defaults to the maximum horizon seen
+                         during ``fit``.  Must not exceed that maximum.
+
+        Returns
+        -------
+        prediction : (target_horizon,) normalised forecast.  De-normalise
+                     using the target series' own location and scale.
+        """
+        self._check_fitted()
+        if target_horizon is None:
+            target_horizon = self._max_H
+        if target_horizon > self._max_H:
+            raise ValueError(
+                f"target_horizon={target_horizon} > max_H={self._max_H} seen during fit."
+            )
+
+        phi_star = acf_embedding(
+            np.asarray(query_context, dtype=float), self.acf_dim
+        )                                              # (d,)
+
+        c = _rbf_kernel(
+            phi_star[None, :], self._phi_centroids,
+            length_scale=self.length_scale_,
+            amplitude=self.amplitude,
+        ).ravel()                                      # (M_total,)
+
+        # Rullière weights: w = (C + D)⁻¹ c
+        w = np.linalg.solve(
+            self._chol_CD.T,
+            np.linalg.solve(self._chol_CD, c),
+        )                                              # (M_total,)
+
+        return w @ self._centroid_preds[:, :target_horizon]  # (target_horizon,)
+
+    # ------------------------------------------------------------------
+    def predict_batch(
+        self,
+        query_contexts: np.ndarray,
+        target_horizon: int | None = None,
+    ) -> np.ndarray:
+        """Predict for multiple query contexts.
+
+        Parameters
+        ----------
+        query_contexts : (N, L) context windows.
+        target_horizon : steps to forecast.
+
+        Returns
+        -------
+        predictions : (N, target_horizon).
+        """
+        self._check_fitted()
+        Q = np.atleast_2d(np.asarray(query_contexts, dtype=float))
+        return np.stack(
+            [self.predict(Q[i], target_horizon) for i in range(Q.shape[0])],
+            axis=0,
+        )

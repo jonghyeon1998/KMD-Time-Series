@@ -44,6 +44,29 @@ _LOG_2PI = float(np.log(2.0 * np.pi))
 # Numerical helpers
 # ---------------------------------------------------------------------------
 
+def _impute_nan_rows(X: np.ndarray) -> np.ndarray:
+    """Impute NaN in each row of X by linear interpolation.
+
+    For rows that are entirely NaN the row is filled with zeros (the
+    normalised median).  Rows without any NaN are returned unchanged.
+    """
+    if not np.isnan(X).any():
+        return X
+    X = X.copy()
+    for i in range(X.shape[0]):
+        row = X[i]
+        nan_mask = np.isnan(row)
+        if not nan_mask.any():
+            continue
+        if nan_mask.all():
+            row[:] = 0.0
+            continue
+        valid_idx   = np.where(~nan_mask)[0]
+        invalid_idx = np.where(nan_mask)[0]
+        row[invalid_idx] = np.interp(invalid_idx, valid_idx, row[valid_idx])
+    return X
+
+
 def _safe_cholesky(mat: np.ndarray) -> np.ndarray:
     """Cholesky with adaptive jitter; never raises LinAlgError.
 
@@ -58,8 +81,10 @@ def _safe_cholesky(mat: np.ndarray) -> np.ndarray:
             return np.linalg.cholesky(mat + jitter * np.eye(n))
         except np.linalg.LinAlgError:
             jitter = max(jitter * 10.0, _EPS * (10.0 ** exp))
-    # Tier 2: clip negative eigenvalues, then add small jitter
-    eigvals, eigvecs = np.linalg.eigh(mat)
+    # Tier 2: clip negative eigenvalues, then add small jitter.
+    # Guard against NaN/inf entries — eigh raises LinAlgError on non-finite input.
+    mat_clean = np.where(np.isfinite(mat), mat, 0.0)
+    eigvals, eigvecs = np.linalg.eigh(mat_clean)
     mat_pd = eigvecs @ np.diag(np.maximum(eigvals, 0.0)) @ eigvecs.T
     for exp in range(10):
         jitter2 = max(1e-8 * (10.0 ** exp), jitter)
@@ -330,7 +355,7 @@ class LengthscaleField:
         mean : (n,) posterior mean.
         var  : (n,) posterior variance  (always ≥ 0).
         """
-        X = np.atleast_2d(np.asarray(X, dtype=float))
+        X = _impute_nan_rows(np.atleast_2d(np.asarray(X, dtype=float)))
         k_star = _rbf_kernel(
             X, self.centroids,
             length_scale=self.meta_bandwidth,
@@ -397,6 +422,15 @@ def fit_gibbs_lengthscale_field(
     y = np.asarray(targets, dtype=float)
     if y.ndim == 1:
         y = y[:, None]
+
+    # Impute NaN by linear interpolation so we keep all windows.
+    # (Dropping was too aggressive for datasets with widespread missing values,
+    #  e.g. bitbrains where 97 % of windows contain at least one NaN sensor reading.)
+    if np.isnan(X).any():
+        X = _impute_nan_rows(X)
+    if np.isnan(y).any():
+        y = _impute_nan_rows(y)
+
     N = X.shape[0]
 
     blocks = partition_into_blocks(N, block_size=block_size_l1, rng=rng)
@@ -429,8 +463,10 @@ def fit_gibbs_lengthscale_field(
             meta_bandwidth = 1.0
 
     # Cap noise_vars: if the MLE curvature is near-zero (flat objective, e.g. the
-    # optimum hit a boundary), r_m = 1/curvature blows up.  Clip to a large but
-    # finite value so the meta-gram stays finite and well-conditioned.
+    # optimum hit a boundary), r_m = 1/curvature blows up.  NaN arises when the
+    # curvature finite-difference computes inf-inf.  Replace any non-finite value
+    # with a large-but-finite uncertainty so the meta-gram stays decomposable.
+    noise_vars = np.where(np.isfinite(noise_vars), noise_vars, 1e6)
     noise_vars = np.clip(noise_vars, 0.0, 1e6)
 
     K_g = _rbf_kernel(centroids, centroids, length_scale=meta_bandwidth, amplitude=meta_amplitude)
@@ -522,6 +558,14 @@ class NestedKrigingForecaster:
         Y = np.asarray(targets, dtype=float)
         if Y.ndim == 1:
             Y = Y[:, None]
+
+        # Impute NaN by linear interpolation (keeps all windows; dropping was
+        # too aggressive for datasets like bitbrains with widespread sensor gaps).
+        if np.isnan(X).any():
+            X = _impute_nan_rows(X)
+        if np.isnan(Y).any():
+            Y = _impute_nan_rows(Y)
+
         N = X.shape[0]
         self._horizon_length = Y.shape[1]
 
@@ -643,7 +687,7 @@ class NestedKrigingForecaster:
         predictions : (H,) if single query, else (n_q, H).
         """
         self._check_fitted()
-        Q = np.atleast_2d(np.asarray(query_contexts, dtype=float))
+        Q = _impute_nan_rows(np.atleast_2d(np.asarray(query_contexts, dtype=float)))
         ell_Q = self.ell_field.predict_ell(Q)               # (n_q,)
 
         results = []
@@ -667,7 +711,7 @@ class NestedKrigingForecaster:
         variances   : scalar or (n_q,) posterior variance of f(x*).
         """
         self._check_fitted()
-        Q = np.atleast_2d(np.asarray(query_contexts, dtype=float))
+        Q = _impute_nan_rows(np.atleast_2d(np.asarray(query_contexts, dtype=float)))
         ell_Q = self.ell_field.predict_ell(Q)
 
         means, vars_ = [], []
@@ -802,9 +846,13 @@ def pool_windows_from_series(
 
         # Instance normalisation
         if normalization == "robust_series":
-            loc = float(np.median(arr))
-            q75, q25 = float(np.percentile(arr, 75)), float(np.percentile(arr, 25))
-            scale = max((q75 - q25) / 1.349, float(np.std(arr)), 1e-6)
+            loc = float(np.nanmedian(arr))
+            q75 = float(np.nanpercentile(arr, 75))
+            q25 = float(np.nanpercentile(arr, 25))
+            _iqr_s = (q75 - q25) / 1.349
+            scale = max(_iqr_s if np.isfinite(_iqr_s) else 0.0,
+                        float(np.nanstd(arr)) if np.isfinite(float(np.nanstd(arr))) else 0.0,
+                        1e-6)
         else:
             loc, scale = 0.0, 1.0
 
@@ -904,9 +952,13 @@ def pool_windows_from_series_with_missing(
             continue
 
         if normalization == "robust_series":
-            loc = float(np.median(obs))
-            q75, q25 = float(np.percentile(obs, 75)), float(np.percentile(obs, 25))
-            scale = max((q75 - q25) / 1.349, float(np.std(obs)), 1e-6)
+            loc = float(np.nanmedian(obs))
+            q75 = float(np.nanpercentile(obs, 75))
+            q25 = float(np.nanpercentile(obs, 25))
+            _iqr_s = (q75 - q25) / 1.349
+            scale = max(_iqr_s if np.isfinite(_iqr_s) else 0.0,
+                        float(np.nanstd(obs)) if np.isfinite(float(np.nanstd(obs))) else 0.0,
+                        1e-6)
         else:
             loc, scale = 0.0, 1.0
 
@@ -1030,10 +1082,20 @@ def pool_intermittent_windows(
             ind_lab_l.append(z_h)
             ind_meta_l.append({"series_idx": s_idx, "window_end": end, "loc": 0.0, "scale": scale})
 
-            # Magnitude pool: all H steps observed AND positive
-            if tgt_obs.all() and (tgt_raw > 0).all():
+            # Magnitude pool: at least one target step is observed AND positive.
+            # (The original "all-H-positive" criterion gave near-zero pool sizes for
+            #  intermittent series because P(all 12 months > 0) ≈ 0.3^12 ≈ 5e-6.)
+            # Non-positive / NaN steps get log-interpolated; fit() will then re-impute
+            # as needed, giving the model a smooth magnitude surface.
+            tgt_positive = tgt_obs & (tgt_raw > 0)
+            if tgt_positive.any():
+                log_tgt = np.where(
+                    tgt_positive,
+                    np.log(np.maximum(tgt_raw, 1e-10) / scale),
+                    np.nan,
+                )
                 mag_ctx_l.append(ctx)
-                mag_tgt_l.append(np.log(tgt_raw / scale))
+                mag_tgt_l.append(_linear_impute(log_tgt))
                 mag_meta_l.append({"series_idx": s_idx, "window_end": end, "loc": 0.0, "scale": scale})
 
     def _stack(lst_ctx, lst_tgt, clen, hlen):
@@ -1246,7 +1308,8 @@ def fit_bernoulli_lengthscale_field(
         else:
             meta_bandwidth = 1.0
 
-    noise_vars = np.clip(noise_vars, 0.0, 1e6)   # guard against flat-objective blow-up
+    noise_vars = np.where(np.isfinite(noise_vars), noise_vars, 1e6)
+    noise_vars = np.clip(noise_vars, 0.0, 1e6)
     K_g = _rbf_kernel(centroids, centroids, length_scale=meta_bandwidth, amplitude=meta_amplitude)
     C = K_g + np.diag(noise_vars)
     chol_C = _safe_cholesky(C)
@@ -1412,7 +1475,7 @@ class BernoulliKrigingClassifier:
         """
         if self._fitted_blocks is None:
             raise RuntimeError("Call fit() before predict_proba().")
-        Q = np.atleast_2d(np.asarray(query_contexts, dtype=float))
+        Q = _impute_nan_rows(np.atleast_2d(np.asarray(query_contexts, dtype=float)))
         ell_Q = self.ell_field.predict_ell(Q)
 
         out = np.stack(
@@ -1472,6 +1535,12 @@ class TwoModelIntermittentForecaster:
         prob_z1 = self.indicator.predict_proba(Q)           # (n_q, H)
 
         ell_Q = self.magnitude.ell_field.predict_ell(Q)     # (n_q,)
+        # Guard: replace any NaN/inf ell with a safe fallback (median of finite values,
+        # or 1.0 if none).  NaN can arise when the meta-GP _alpha has non-finite entries
+        # from degenerate magnitude blocks.
+        _fin_ell = ell_Q[np.isfinite(ell_Q)]
+        _ell_fallback = float(np.median(_fin_ell)) if _fin_ell.size > 0 else 1.0
+        ell_Q = np.where(np.isfinite(ell_Q), ell_Q, _ell_fallback)
         log_means, log_vars = [], []
         for i in range(Q.shape[0]):
             mu_h, sigma2 = self.magnitude._predict_single(Q[i], float(ell_Q[i]))
@@ -1561,9 +1630,13 @@ def pool_windows_from_multivariate_series(
             ch_arr = arr[:, ch]                             # (T,)
 
             if normalization == "robust_series":
-                loc = float(np.median(ch_arr))
-                q75, q25 = float(np.percentile(ch_arr, 75)), float(np.percentile(ch_arr, 25))
-                scale = max((q75 - q25) / 1.349, float(np.std(ch_arr)), 1e-6)
+                loc = float(np.nanmedian(ch_arr))
+                q75 = float(np.nanpercentile(ch_arr, 75))
+                q25 = float(np.nanpercentile(ch_arr, 25))
+                _iqr_s = (q75 - q25) / 1.349
+                scale = max(_iqr_s if np.isfinite(_iqr_s) else 0.0,
+                            float(np.nanstd(ch_arr)) if np.isfinite(float(np.nanstd(ch_arr))) else 0.0,
+                            1e-6)
             else:
                 loc, scale = 0.0, 1.0
 
@@ -1656,9 +1729,13 @@ def pool_windows_from_multivariate_series_with_missing(
                 continue
 
             if normalization == "robust_series":
-                loc = float(np.median(obs_vals))
-                q75, q25 = float(np.percentile(obs_vals, 75)), float(np.percentile(obs_vals, 25))
-                scale = max((q75 - q25) / 1.349, float(np.std(obs_vals)), 1e-6)
+                loc = float(np.nanmedian(obs_vals))
+                q75 = float(np.nanpercentile(obs_vals, 75))
+                q25 = float(np.nanpercentile(obs_vals, 25))
+                _iqr_s = (q75 - q25) / 1.349
+                scale = max(_iqr_s if np.isfinite(_iqr_s) else 0.0,
+                            float(np.nanstd(obs_vals)) if np.isfinite(float(np.nanstd(obs_vals))) else 0.0,
+                            1e-6)
             else:
                 loc, scale = 0.0, 1.0
 

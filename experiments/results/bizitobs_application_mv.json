@@ -1,0 +1,52 @@
+{
+  "hyperparameters": {
+    "DATASET_NAME": "bizitobs_application",
+    "CONTEXT_LENGTH": 120,
+    "HORIZON_LENGTH": null,
+    "TARGET_DIM": 2,
+    "BLOCK_SIZE_L1": 10,
+    "BLOCK_SIZE_L2": 30,
+    "MAX_SERIES": 1,
+    "MAX_BLOCKS_L2": 30,
+    "MAX_WINDOWS_PER_SERIES": 100,
+    "SIGMA_N_L1": 0.1,
+    "SIGMA_N_L2": 0.1,
+    "AMPLITUDE_L1": 1.0,
+    "AMPLITUDE_L2": 1.0,
+    "LOG_ELL_LO": 0.0,
+    "LOG_ELL_HI": 3.69,
+    "META_AMPLITUDE": 1.0,
+    "META_BANDWIDTH": null,
+    "NORMALIZATION": "robust_series",
+    "MIN_OBS_FRACTION": 0.5,
+    "SERIES_INDEX": 0,
+    "CHANNEL_INDEX": 0,
+    "EVALUATE_ALL_SERIES": true,
+    "EVAL_SERIES_LIMIT": 100
+  },
+  "short_term_MASE": [
+    1.2706668034678354,
+    1.1767060418511956
+  ],
+  "test_MASE": [
+    7.267558764016799,
+    2.42302263220108,
+    6.107861889884092,
+    12.135160475930265,
+    11.381621187259416,
+    9.789673995595331,
+    81.07923211050277,
+    55.95124685877026,
+    3.5848135302751154,
+    4.62148817491568
+  ],
+  "metrics": {
+    "short_mean_MASE": 1.2236864226595157,
+    "short_median_MASE": 1.2236864226595157,
+    "short_n_evaluated": 2,
+    "test_mean_MASE": 19.43416796193508,
+    "test_median_MASE": 8.528616379806065,
+    "test_n_evaluated": 10,
+    "test_mean_s_naive_MASE": 0.0
+  }
+}

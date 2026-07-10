@@ -1,0 +1,43 @@
+{
+  "hyperparameters": {
+    "DATASET_NAME": "us_births/W",
+    "CONTEXT_LENGTH": 52,
+    "HORIZON_LENGTH": null,
+    "BLOCK_SIZE_L1": 10,
+    "BLOCK_SIZE_L2": 27,
+    "MAX_SERIES": 200,
+    "MAX_BLOCKS_L2": 30,
+    "MAX_WINDOWS_PER_SERIES": 200,
+    "SIGMA_N_L1": 0.1,
+    "SIGMA_N_L2": 0.1,
+    "AMPLITUDE_L1": 1.0,
+    "AMPLITUDE_L2": 1.0,
+    "LOG_ELL_LO": 0.0,
+    "LOG_ELL_HI": 2.85,
+    "META_AMPLITUDE": 1.0,
+    "META_BANDWIDTH": null,
+    "NORMALIZATION": "robust_series",
+    "SERIES_INDEX": 0,
+    "EVALUATE_ALL_SERIES": true,
+    "EVAL_SERIES_LIMIT": 100
+  },
+  "short_term_MASE": [
+    1.8075235871758208
+  ],
+  "test_MASE": [
+    0.8065943196351717,
+    0.8292842200111471,
+    1.4304271048074653,
+    1.493724664459197,
+    1.7756729346267395
+  ],
+  "metrics": {
+    "short_mean_MASE": 1.8075235871758208,
+    "short_median_MASE": 1.8075235871758208,
+    "short_n_evaluated": 1,
+    "test_mean_MASE": 1.2671406487079442,
+    "test_median_MASE": 1.4304271048074653,
+    "test_n_evaluated": 5,
+    "test_mean_s_naive_MASE": 1.1644244934526609
+  }
+}

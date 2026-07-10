@@ -1,0 +1,43 @@
+{
+  "hyperparameters": {
+    "DATASET_NAME": "saugeenday/D",
+    "CONTEXT_LENGTH": 365,
+    "HORIZON_LENGTH": null,
+    "BLOCK_SIZE_L1": 25,
+    "BLOCK_SIZE_L2": 100,
+    "MAX_SERIES": 200,
+    "MAX_BLOCKS_L2": 30,
+    "MAX_WINDOWS_PER_SERIES": 400,
+    "SIGMA_N_L1": 0.1,
+    "SIGMA_N_L2": 0.1,
+    "AMPLITUDE_L1": 1.0,
+    "AMPLITUDE_L2": 1.0,
+    "LOG_ELL_LO": 0.0,
+    "LOG_ELL_HI": 4.8,
+    "META_AMPLITUDE": 1.0,
+    "META_BANDWIDTH": null,
+    "NORMALIZATION": "robust_series",
+    "SERIES_INDEX": 0,
+    "EVALUATE_ALL_SERIES": true,
+    "EVAL_SERIES_LIMIT": 100
+  },
+  "short_term_MASE": [
+    4.208151400018712
+  ],
+  "test_MASE": [
+    1.0836515879945003,
+    0.46470624466565774,
+    0.5265842845082482,
+    0.4594037017023866,
+    0.7068924673050372
+  ],
+  "metrics": {
+    "short_mean_MASE": 4.208151400018712,
+    "short_median_MASE": 4.208151400018712,
+    "short_n_evaluated": 1,
+    "test_mean_MASE": 0.6482476572351661,
+    "test_median_MASE": 0.5265842845082482,
+    "test_n_evaluated": 5,
+    "test_mean_s_naive_MASE": 1.2207872342643624
+  }
+}

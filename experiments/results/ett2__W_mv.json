@@ -1,0 +1,61 @@
+{
+  "hyperparameters": {
+    "DATASET_NAME": "ett2/W",
+    "CONTEXT_LENGTH": 52,
+    "HORIZON_LENGTH": null,
+    "TARGET_DIM": 7,
+    "BLOCK_SIZE_L1": 10,
+    "BLOCK_SIZE_L2": 20,
+    "MAX_SERIES": 1,
+    "MAX_BLOCKS_L2": 30,
+    "MAX_WINDOWS_PER_SERIES": 100,
+    "SIGMA_N_L1": 0.1,
+    "SIGMA_N_L2": 0.1,
+    "AMPLITUDE_L1": 1.0,
+    "AMPLITUDE_L2": 1.0,
+    "LOG_ELL_LO": 0.0,
+    "LOG_ELL_HI": 2.85,
+    "META_AMPLITUDE": 1.0,
+    "META_BANDWIDTH": null,
+    "NORMALIZATION": "robust_series",
+    "MIN_OBS_FRACTION": 0.5,
+    "SERIES_INDEX": 0,
+    "CHANNEL_INDEX": 0,
+    "EVALUATE_ALL_SERIES": true,
+    "EVAL_SERIES_LIMIT": 100
+  },
+  "short_term_MASE": [
+    0.8049438906595553,
+    0.8989716075604464,
+    1.0894744038730273,
+    1.208703623586962,
+    0.31601332016628964,
+    0.5536074475577936,
+    5.810976608005701
+  ],
+  "test_MASE": [
+    1.3647199263466414,
+    0.534192809692087,
+    1.0267301587231077,
+    0.42530931701588176,
+    1.0156451405885856,
+    0.6190554459283181,
+    1.3976197232615197,
+    1.0717034839722237,
+    0.24074922264557774,
+    0.5848161286078079,
+    0.10706572434699177,
+    1.055562390915951,
+    0.552359001311118,
+    3.467293469580938
+  ],
+  "metrics": {
+    "short_mean_MASE": 1.5260987002013964,
+    "short_median_MASE": 0.8989716075604464,
+    "short_n_evaluated": 7,
+    "test_mean_MASE": 0.9616301387811962,
+    "test_median_MASE": 0.8173502932584518,
+    "test_n_evaluated": 14,
+    "test_mean_s_naive_MASE": 0.0
+  }
+}

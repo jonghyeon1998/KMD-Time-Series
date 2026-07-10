@@ -45,16 +45,32 @@ _LOG_2PI = float(np.log(2.0 * np.pi))
 # ---------------------------------------------------------------------------
 
 def _safe_cholesky(mat: np.ndarray) -> np.ndarray:
-    """Cholesky with adaptive jitter; never raises LinAlgError."""
+    """Cholesky with adaptive jitter; never raises LinAlgError.
+
+    Escalates through three tiers:
+      1. Adaptive jitter: try 0, then ε·10^k for k=0..17
+      2. Eigenvalue clipping: project to nearest PSD matrix, then retry
+    """
     jitter = 0.0
     n = mat.shape[0]
-    for exp in range(15):
+    for exp in range(18):
         try:
             return np.linalg.cholesky(mat + jitter * np.eye(n))
         except np.linalg.LinAlgError:
             jitter = max(jitter * 10.0, _EPS * (10.0 ** exp))
-    # Last resort
-    return np.linalg.cholesky(mat + 1e-3 * np.eye(n))
+    # Tier 2: clip negative eigenvalues, then add small jitter
+    eigvals, eigvecs = np.linalg.eigh(mat)
+    mat_pd = eigvecs @ np.diag(np.maximum(eigvals, 0.0)) @ eigvecs.T
+    for exp in range(10):
+        jitter2 = max(1e-8 * (10.0 ** exp), jitter)
+        try:
+            return np.linalg.cholesky(mat_pd + jitter2 * np.eye(n))
+        except np.linalg.LinAlgError:
+            pass
+    raise np.linalg.LinAlgError(
+        f"_safe_cholesky: matrix ({n}×{n}) could not be regularised. "
+        f"min eigenvalue = {float(eigvals.min()):.3g}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -411,6 +427,11 @@ def fit_gibbs_lengthscale_field(
             meta_bandwidth = float(np.sqrt(np.median(off_diag) + _EPS))
         else:
             meta_bandwidth = 1.0
+
+    # Cap noise_vars: if the MLE curvature is near-zero (flat objective, e.g. the
+    # optimum hit a boundary), r_m = 1/curvature blows up.  Clip to a large but
+    # finite value so the meta-gram stays finite and well-conditioned.
+    noise_vars = np.clip(noise_vars, 0.0, 1e6)
 
     K_g = _rbf_kernel(centroids, centroids, length_scale=meta_bandwidth, amplitude=meta_amplitude)
     C = K_g + np.diag(noise_vars)                          # (M, M) noisy meta-gram
@@ -1225,6 +1246,7 @@ def fit_bernoulli_lengthscale_field(
         else:
             meta_bandwidth = 1.0
 
+    noise_vars = np.clip(noise_vars, 0.0, 1e6)   # guard against flat-objective blow-up
     K_g = _rbf_kernel(centroids, centroids, length_scale=meta_bandwidth, amplitude=meta_amplitude)
     C = K_g + np.diag(noise_vars)
     chol_C = _safe_cholesky(C)
